@@ -1,6 +1,7 @@
 package top
 
 import (
+	"context"
 	"strings"
 
 	"strconv"
@@ -25,21 +26,36 @@ type WordOrder struct {
 type WordOrders []WordOrder
 
 func (wos WordOrders) SaveKeywords() error {
-	return wos.save("keywords")
+	return wos.SaveKeywordsContext(context.Background())
 }
 
 func (wos WordOrders) SaveAuthors() error {
-	return wos.save("authors")
+	return wos.SaveAuthorsContext(context.Background())
 }
 
 func (wos WordOrders) SavePushSum() error {
-	return wos.save("pushsum")
+	return wos.SavePushSumContext(context.Background())
 }
 
-func (wos WordOrders) save(kind string) error {
+func (wos WordOrders) SaveKeywordsContext(ctx context.Context) error {
+	return wos.saveContext(ctx, "keywords")
+}
+
+func (wos WordOrders) SaveAuthorsContext(ctx context.Context) error {
+	return wos.saveContext(ctx, "authors")
+}
+
+func (wos WordOrders) SavePushSumContext(ctx context.Context) error {
+	return wos.saveContext(ctx, "pushsum")
+}
+
+func (wos WordOrders) saveContext(ctx context.Context, kind string) error {
 	conn := connections.Redis()
 	defer conn.Close()
 	for _, wo := range wos {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := conn.Do("ZADD", prefix+kind, wo.Count, wo.String()); err != nil {
 			log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 			return err

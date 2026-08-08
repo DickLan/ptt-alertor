@@ -1,13 +1,43 @@
 package web
 
 import (
+	"context"
+	"errors"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Ptt-Alertor/ptt-alertor/models/article"
+	"golang.org/x/net/html"
 	gock "gopkg.in/h2non/gock.v1"
 )
+
+func TestCheckSiteContextUsesSharedHTMLValidation(t *testing.T) {
+	defer gock.Off()
+	originalReport := reportBotChallenge
+	challengeReported := false
+	reportBotChallenge = func() { challengeReported = true }
+	defer func() { reportBotChallenge = originalReport }()
+
+	gock.New("https://www.ptt.cc").Get("/bbs/index.html").Reply(200).BodyString(
+		`<html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/x"></script></body></html>`)
+	if err := CheckSiteContext(context.Background()); !errors.Is(err, ErrBotChallenge) {
+		t.Fatalf("CheckSiteContext() error = %v, want ErrBotChallenge", err)
+	}
+	if !challengeReported {
+		t.Fatal("CheckSiteContext() did not report the shared challenge cooldown")
+	}
+}
+
+func TestCheckSiteContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := CheckSiteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CheckSiteContext() error = %v, want context.Canceled", err)
+	}
+}
 
 func BenchmarkCurrentPage(b *testing.B) {
 	for i := 0; i < b.N; i++ {
@@ -44,6 +74,10 @@ func Test_getYear(t *testing.T) {
 }
 
 func Test_checkURLExist(t *testing.T) {
+	defer gock.Off()
+	gock.New("http://dinolai.com").Get("/").Reply(200)
+	gock.New("http://dinolai.tw").Get("/").Reply(404)
+
 	type args struct {
 		url string
 	}
@@ -108,6 +142,20 @@ func Test_makeArticleURL(t *testing.T) {
 }
 
 func Test_fetchHTML(t *testing.T) {
+	defer gock.Off()
+	originalReport := reportBotChallenge
+	challengeReported := false
+	reportBotChallenge = func() { challengeReported = true }
+	defer func() { reportBotChallenge = originalReport }()
+	gock.New("https://www.ptt.cc").Get("/bbs/LoL/index.html").Reply(200).BodyString(dummyBody)
+	gock.New("https://www.ptt.cc").Get("/bbs/Gossiping/index.html").Reply(200).BodyString(
+		`<html><head><script>document.cookie.indexOf('over18=1')</script></head><body></body></html>`)
+	gock.New("https://www.ptt.cc").Get("/bbs/Challenge/index.html").Reply(200).BodyString(
+		`<html><head><title>Just a moment...</title></head><body><script src="/cdn-cgi/challenge-platform/x"></script></body></html>`)
+	gock.New("https://www.ptt.cc").Get("/bbs/Redirect/index.html").Reply(302).SetHeader("Location", "/new-location")
+	gock.New("https://www.ptt.cc").Get("/bbs/Over18/index.html").Reply(302).SetHeader("Location", "/ask/over18?from=/bbs/Over18/index.html")
+	gock.New("https://www.ptt.cc").Get("/bbs/DinoLai/index.html").Reply(404)
+
 	type args struct {
 		reqURL string
 	}
@@ -117,17 +165,34 @@ func Test_fetchHTML(t *testing.T) {
 		wantErr bool
 	}{
 		{"ok", args{"https://www.ptt.cc/bbs/LoL/index.html"}, false},
-		{"R18", args{"https://www.ptt.cc/bbs/Gossiping/index.html"}, false},
+		{"R18 requires explicit consent", args{"https://www.ptt.cc/bbs/Gossiping/index.html"}, true},
+		{"anti-bot challenge", args{"https://www.ptt.cc/bbs/Challenge/index.html"}, true},
+		{"unexpected redirect", args{"https://www.ptt.cc/bbs/Redirect/index.html"}, true},
+		{"over18 redirect", args{"https://www.ptt.cc/bbs/Over18/index.html"}, true},
 		{"not found", args{"https://www.ptt.cc/bbs/DinoLai/index.html"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "R18 requires explicit consent" {
+				original, existed := os.LookupEnv("PTT_OVER18")
+				_ = os.Setenv("PTT_OVER18", "false")
+				defer func() {
+					if existed {
+						_ = os.Setenv("PTT_OVER18", original)
+					} else {
+						_ = os.Unsetenv("PTT_OVER18")
+					}
+				}()
+			}
 			_, err := fetchHTML(tt.args.reqURL)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("fetchHTML() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 		})
+	}
+	if !challengeReported {
+		t.Fatal("anti-bot challenge did not report a shared cooldown")
 	}
 }
 
@@ -149,7 +214,7 @@ func TestBuildArticles(t *testing.T) {
 		{"ok", args{"lol", -1}, []article.Article{
 			{
 				ID:      1516285019,
-				Code:    "",
+				Code:    "M.1516285019.A.BCE",
 				Title:   "[外絮] JTeam FB",
 				Link:    "https://www.ptt.cc/bbs/LoL/M.1516285019.A.BCE.html",
 				Date:    "1/18",
@@ -174,6 +239,63 @@ func TestBuildArticles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBoardParserRejectsIncomplete200PagesWithoutPanicking(t *testing.T) {
+	validEmpty := `<html><body><div id="main-container">
+		<div id="action-bar-container"><div class="btn-group btn-group-paging"><a><span>上頁</span></a></div></div>
+		<div class="r-list-container action-bar-margin"><div class="r-list-sep"></div></div>
+	</div></body></html>`
+	articles, err := articlesFromBoardDocument(parseTestHTML(t, validEmpty), "NBA")
+	if err != nil || len(articles) != 0 {
+		t.Fatalf("valid empty board = %#v, %v", articles, err)
+	}
+	page, err := currentPageFromDocument(parseTestHTML(t, validEmpty), "NBA")
+	if err != nil || page != 1 {
+		t.Fatalf("nested-text page control = %d, %v; want 1, nil", page, err)
+	}
+
+	withoutSeparator := `<html><body><div id="main-container">
+		<div id="action-bar-container"><div class="btn-group btn-group-paging"><a><span>上頁</span></a></div></div>
+		<div class="r-list-container action-bar-margin">
+			<div class="r-ent"><div class="title"><a href="/bbs/NBA/M.1.A.AAA.html">[賣] test card</a></div><div class="meta"><div class="date">8/08</div><div class="author">seller</div></div></div>
+		</div>
+	</div></body></html>`
+	articles, err = articlesFromBoardDocument(parseTestHTML(t, withoutSeparator), "NBA")
+	if err != nil || len(articles) != 1 || articles[0].Code != "M.1.A.AAA" {
+		t.Fatalf("separator-less board = %#v, %v", articles, err)
+	}
+
+	malformed := []string{
+		`<html><body>maintenance</body></html>`,
+		`<html><body><div id="main-container"><div id="action-bar-container"><div class="btn-group btn-group-paging"></div></div><div class="r-list-container"><div class="r-list-sep"></div></div><div class="r-list-container"><div class="r-list-sep"></div></div></div></body></html>`,
+		`<html><body><div id="main-container"><div id="action-bar-container"><div class="btn-group btn-group-paging"></div></div><div class="r-list-container"><div class="r-ent"><div class="title"></div><div class="meta"><div class="date"></div><div class="author"></div></div></div><div class="r-list-sep"></div></div></div></body></html>`,
+		`<html><body><div id="main-container"><div id="action-bar-container"><div class="btn-group btn-group-paging"></div></div><div class="r-list-container"></div></div></body></html>`,
+		`<html><body><div id="main-container"><div id="action-bar-container"><div class="btn-group btn-group-paging"></div></div><div class="r-list-container"><div class="r-list-sep"></div><div class="r-list-sep"></div></div></div></body></html>`,
+	}
+	for index, body := range malformed {
+		if _, err := articlesFromBoardDocument(parseTestHTML(t, body), "NBA"); !errors.Is(err, ErrIncompleteBoardPage) {
+			t.Errorf("malformed page %d error = %v, want ErrIncompleteBoardPage", index, err)
+		}
+	}
+}
+
+func TestReadHTMLBodyRejectsSilentTruncation(t *testing.T) {
+	if content, err := readHTMLBody(strings.NewReader(strings.Repeat("x", maxHTMLResponseSize))); err != nil || len(content) != maxHTMLResponseSize {
+		t.Fatalf("exact-limit body length = %d, error = %v", len(content), err)
+	}
+	if _, err := readHTMLBody(strings.NewReader(strings.Repeat("x", maxHTMLResponseSize+1))); !errors.Is(err, ErrHTMLResponseTooLarge) {
+		t.Fatalf("oversized body error = %v, want ErrHTMLResponseTooLarge", err)
+	}
+}
+
+func parseTestHTML(t *testing.T, body string) *html.Node {
+	t.Helper()
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return document
 }
 
 func TestBuildArticle(t *testing.T) {
@@ -218,6 +340,25 @@ func TestBuildArticle(t *testing.T) {
 				t.Errorf("BuildArticle() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFetchArticleRejectsStructurallyIncompleteSuccessfulPages(t *testing.T) {
+	defer gock.Off()
+	gock.New("https://www.ptt.cc").
+		Get("/bbs/NBA/M.1.A.BAD.html").
+		Reply(200).
+		BodyString(`<html><head><meta property="og:title" content="not an article"></head><body></body></html>`)
+	if _, err := FetchArticle("NBA", "M.1.A.BAD"); !errors.Is(err, ErrIncompleteArticlePage) {
+		t.Fatalf("missing main-content error = %v, want ErrIncompleteArticlePage", err)
+	}
+
+	gock.New("https://www.ptt.cc").
+		Get("/bbs/NBA/M.2.A.BAD.html").
+		Reply(200).
+		BodyString(`<html><body><div id="main-content"><div class="push"><span class="f3 hl push-userid">user</span></div></div></body></html>`)
+	if _, err := FetchArticle("NBA", "M.2.A.BAD"); !errors.Is(err, ErrIncompleteArticlePage) {
+		t.Fatalf("incomplete push error = %v, want ErrIncompleteArticlePage", err)
 	}
 }
 

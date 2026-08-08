@@ -1,9 +1,14 @@
-# comment
-   .*
-   Dockerfile*
-   docker_golang_1.8/*
-   LICENSE*
-   README.md
-   logo.jpg
-   public/assets/images/*
-
+.git
+.github
+.env
+.env.*
+!.env.example
+coverage.txt
+*.out
+*.test
+ptt-alertor
+docker_golang_1.8/
+LICENSE
+README.md
+logo.jpg
+public/assets/images/

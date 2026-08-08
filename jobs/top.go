@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"sort"
 	"strconv"
 
@@ -19,11 +20,18 @@ func NewTop() *Top {
 }
 
 func (t Top) Run() {
+	t.RunContext(context.Background())
+}
+
+func (t Top) RunContext(ctx context.Context) {
 	log.Info("Top List Generated")
 	keywordMap := make(map[top.BoardWord]int)
 	authorMap := make(map[top.BoardWord]int)
 	pushSumMap := make(map[top.BoardWord]int)
-	for _, u := range models.User().All() {
+	for _, u := range models.User().AllContext(ctx) {
+		if ctx.Err() != nil {
+			return
+		}
 		for _, sub := range u.Subscribes {
 			for _, keyword := range sub.Keywords {
 				keyword = strings.ToLower(keyword)
@@ -41,12 +49,19 @@ func (t Top) Run() {
 			}
 		}
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	topKeywords := rank(keywordMap)
-	topKeywords.SaveKeywords()
+	if err := topKeywords.SaveKeywordsContext(ctx); err != nil {
+		return
+	}
 	topAuthors := rank(authorMap)
-	topAuthors.SaveAuthors()
+	if err := topAuthors.SaveAuthorsContext(ctx); err != nil {
+		return
+	}
 	topPushSum := rank(pushSumMap)
-	topPushSum.SavePushSum()
+	_ = topPushSum.SavePushSumContext(ctx)
 }
 
 func rank(m map[top.BoardWord]int) (orderSlice top.WordOrders) {

@@ -1,18 +1,16 @@
 package jobs
 
 import (
+	"context"
 	"errors"
-
-	"github.com/Ptt-Alertor/ptt-alertor/models"
-	"github.com/Ptt-Alertor/ptt-alertor/models/user"
+	"fmt"
+	"strings"
 )
 
-var platforms = map[string]bool{
-	"email":     true,
-	"line":      true,
-	"messenger": true,
-	"telegram":  true,
-}
+var (
+	ErrNoBroadcastPlatform          = errors.New("broadcast platform is required")
+	ErrUnsupportedBroadcastPlatform = errors.New("unsupported broadcast platform")
+)
 
 type Broadcaster struct {
 	Checker
@@ -23,51 +21,29 @@ func (bc Broadcaster) String() string {
 	return bc.Msg
 }
 
-func (bc Broadcaster) Send(plfms []string) error {
-	var platformBl = make(map[string]bool)
-	for _, plfm := range plfms {
-		if _, ok := platforms[plfm]; !ok {
-			return errors.New("platform " + plfm + "is not in broadcast list")
-		}
-		platformBl[plfm] = true
+// Send delivers an administrative broadcast once to the global Discord
+// webhook. Legacy per-user delivery platforms are intentionally unsupported.
+func (bc Broadcaster) Send(platforms []string) error {
+	return bc.SendContext(context.Background(), platforms)
+}
+
+// SendContext is Send with cancellation inherited from the HTTP request.
+func (bc Broadcaster) SendContext(ctx context.Context, platforms []string) error {
+	if len(platforms) == 0 {
+		return ErrNoBroadcastPlatform
 	}
 
-	for _, u := range models.User().All() {
-		bc.subType = "broadcast"
-		if platformBl["line"] {
-			go bc.sendLine(u)
+	discordRequested := false
+	for _, platform := range platforms {
+		platform = strings.ToLower(strings.TrimSpace(platform))
+		if platform != "discord" {
+			return fmt.Errorf("%w %q; use discord", ErrUnsupportedBroadcastPlatform, platform)
 		}
-		if platformBl["messenger"] {
-			go bc.sendMessenger(u)
-		}
-		if platformBl["telegram"] {
-			go bc.sendTelegram(u)
-		}
-		if platformBl["email"] {
-			go bc.sendEmail(u)
-		}
+		discordRequested = true
 	}
-	return nil
-}
+	if !discordRequested {
+		return ErrNoBroadcastPlatform
+	}
 
-func (bc Broadcaster) sendEmail(u *user.User) {
-	bc.Profile.Email = u.Profile.Email
-	ckCh <- bc
-}
-
-func (bc Broadcaster) sendLine(u *user.User) {
-	bc.Profile.Line = u.Profile.Line
-	bc.Profile.LineAccessToken = u.Profile.LineAccessToken
-	ckCh <- bc
-}
-
-func (bc Broadcaster) sendMessenger(u *user.User) {
-	bc.Profile.Messenger = u.Profile.Messenger
-	ckCh <- bc
-}
-
-func (bc Broadcaster) sendTelegram(u *user.User) {
-	bc.Profile.Telegram = u.Profile.Telegram
-	bc.Profile.TelegramChat = u.Profile.TelegramChat
-	ckCh <- bc
+	return discordWebhook.Send(ctx, bc.Msg)
 }

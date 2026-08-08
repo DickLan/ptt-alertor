@@ -18,7 +18,7 @@ func (ss *StringSlice) Clean() {
 }
 
 func (ss *StringSlice) RemoveStringsSpace() {
-	if *ss != nil {
+	if len(*ss) > 0 {
 		*ss = strings.Split(strings.Replace(strings.Join(*ss, ","), " ", "", -1), ",")
 	}
 }

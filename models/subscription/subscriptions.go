@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -49,22 +50,38 @@ func (ss Subscriptions) StringCommentList() string {
 }
 
 func (ss *Subscriptions) Add(sub Subscription) error {
-	if ok, suggestion := board.CheckBoardExist(sub.Board); !ok {
+	return ss.AddContext(context.Background(), sub)
+}
+
+func (ss *Subscriptions) AddContext(ctx context.Context, sub Subscription) error {
+	ok, suggestion, err := board.CheckBoardExistContext(ctx, sub.Board)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return board.BoardNotExistError{Suggestion: suggestion}
 	}
+	ss.AddVerified(sub)
+	return nil
+}
+
+// AddVerified updates the in-memory subscription after the caller has already
+// verified the board through a successful article fetch.
+func (ss *Subscriptions) AddVerified(sub Subscription) {
 	sub.CleanUp()
+	if isSubEmpty(sub) {
+		return
+	}
 	for i, s := range *ss {
 		if strings.EqualFold(s.Board, sub.Board) {
 			s.Keywords.AppendNonRepeat(sub.Keywords, false)
 			s.Authors.AppendNonRepeat(sub.Authors, false)
 			s.Articles.AppendNonRepeat(sub.Articles, false)
 			(*ss)[i] = s
-			return nil
+			return
 		}
 	}
 	*ss = append(*ss, sub)
-
-	return nil
 }
 
 func (ss *Subscriptions) Remove(sub Subscription) error {
@@ -87,9 +104,24 @@ func (ss *Subscriptions) Remove(sub Subscription) error {
 }
 
 func (ss *Subscriptions) Update(sub Subscription) error {
-	if ok, suggestion := board.CheckBoardExist(sub.Board); !ok {
+	return ss.UpdateContext(context.Background(), sub)
+}
+
+func (ss *Subscriptions) UpdateContext(ctx context.Context, sub Subscription) error {
+	ok, suggestion, err := board.CheckBoardExistContext(ctx, sub.Board)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return board.BoardNotExistError{Suggestion: suggestion}
 	}
+	ss.UpdateVerified(sub)
+	return nil
+}
+
+// UpdateVerified updates a push-sum subscription after board validation has
+// already succeeded and performs no external writes.
+func (ss *Subscriptions) UpdateVerified(sub Subscription) {
 	for i := 0; i < len(*ss); i++ {
 		s := (*ss)[i]
 		if strings.EqualFold(s.Board, sub.Board) {
@@ -99,11 +131,13 @@ func (ss *Subscriptions) Update(sub Subscription) error {
 				*ss = append((*ss)[:i], (*ss)[i+1:]...)
 				i--
 			}
-			return nil
+			return
 		}
 	}
+	if isSubEmpty(sub) {
+		return
+	}
 	*ss = append(*ss, sub)
-	return nil
 }
 
 func (ss *Subscriptions) Delete(sub Subscription) error {

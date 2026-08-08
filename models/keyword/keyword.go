@@ -11,14 +11,22 @@ import (
 const prefix string = "keyword:"
 
 func Subscribers(board string) []string {
-	key := prefix + board + ":subs"
-	conn := connections.Redis()
-	defer conn.Close()
-	accounts, err := redis.Strings(conn.Do("SMEMBERS", key))
+	accounts, err := SubscribersE(board)
 	if err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 	}
 	return accounts
+}
+
+// SubscribersE distinguishes an empty subscriber set from a Redis failure.
+// Background cursor code must use this form so storage outages cannot be
+// mistaken for "nobody matched".
+func SubscribersE(board string) ([]string, error) {
+	key := prefix + board + ":subs"
+	conn := connections.Redis()
+	defer conn.Close()
+	accounts, err := redis.Strings(conn.Do("SMEMBERS", key))
+	return accounts, err
 }
 
 func AddSubscriber(board, account string) error {

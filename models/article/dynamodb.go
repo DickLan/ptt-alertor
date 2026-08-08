@@ -2,7 +2,9 @@ package article
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	log "github.com/Ptt-Alertor/logrus"
@@ -19,9 +21,18 @@ const tableName string = "articles"
 type DynamoDB struct{}
 
 func (DynamoDB) Find(code string, a *Article) {
+	if err := (DynamoDB{}).FindE(code, a); err != nil {
+		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error("DynamoDB Find Article Failed")
+	}
+}
+
+// FindE preserves AWS and decoding failures for reliable comment producers.
+// A missing item remains a valid empty result, matching the Redis driver.
+func (DynamoDB) FindE(code string, a *Article) error {
 	dynamo := dynamodb.New(session.New())
 	result, err := dynamo.GetItem(&dynamodb.GetItemInput{
-		TableName: aws.String(tableName),
+		TableName:      aws.String(tableName),
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]*dynamodb.AttributeValue{
 			"Code": {
 				S: aws.String(code),
@@ -29,47 +40,72 @@ func (DynamoDB) Find(code string, a *Article) {
 		},
 	})
 	if err != nil {
-		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error("DynamoDB Find Article Failed")
-		return
+		return err
 	}
 
 	if len(result.Item) == 0 {
-		log.WithField("code", code).Warn("Article Not Found")
-		return
+		return nil
 	}
 
-	a.Code = aws.StringValue(result.Item["Code"].S)
-	a.Title = aws.StringValue(result.Item["Title"].S)
-	a.Link = aws.StringValue(result.Item["Link"].S)
-	a.Date = aws.StringValue(result.Item["Date"].S)
-	a.Author = aws.StringValue(result.Item["Author"].S)
-	a.Board = aws.StringValue(result.Item["Board"].S)
-	if err := dynamodbattribute.Unmarshal(result.Item["ID"], &a.ID); err != nil {
-		log.WithFields(log.Fields{
-			"code": code,
-			"id":   result.Item["ID"],
-		}).WithError(err).Warn("Article ID Unmarshal Failed")
+	a.Code, err = requiredDynamoString(result.Item, "Code")
+	if err != nil {
+		return fmt.Errorf("DynamoDB article %s: %w", code, err)
 	}
-	if err := dynamodbattribute.Unmarshal(result.Item["PushSum"], &a.PushSum); err != nil {
-		log.WithFields(log.Fields{
-			"code":    code,
-			"pushSum": result.Item["PushSum"],
-		}).WithError(err).Warn("Article PushSum Unmarshal Failed")
+	a.Title = dynamoString(result.Item, "Title")
+	a.Link = dynamoString(result.Item, "Link")
+	a.Date = dynamoString(result.Item, "Date")
+	a.Author = dynamoString(result.Item, "Author")
+	a.Board, err = requiredDynamoString(result.Item, "Board")
+	if err != nil {
+		return fmt.Errorf("DynamoDB article %s: %w", code, err)
 	}
-	if a.LastPushDateTime, err = time.Parse(time.RFC3339, aws.StringValue(result.Item["LastPushDateTime"].S)); err != nil {
-		log.WithFields(log.Fields{
-			"code":             code,
-			"lastPushDateTime": result.Item["LastPushDateTime"],
-		}).WithError(err).Warn("Article LastPushDateTime Unmarshal Failed")
+	if value := result.Item["ID"]; value != nil {
+		if err := dynamodbattribute.Unmarshal(value, &a.ID); err != nil {
+			return fmt.Errorf("decode DynamoDB article %s ID: %w", code, err)
+		}
 	}
-	comments := aws.StringValue(result.Item["Comments"].S)
+	if value := result.Item["PushSum"]; value != nil {
+		if err := dynamodbattribute.Unmarshal(value, &a.PushSum); err != nil {
+			return fmt.Errorf("decode DynamoDB article %s PushSum: %w", code, err)
+		}
+	}
+	if lastPush := dynamoString(result.Item, "LastPushDateTime"); lastPush != "" {
+		if a.LastPushDateTime, err = time.Parse(time.RFC3339, lastPush); err != nil {
+			return fmt.Errorf("decode DynamoDB article %s LastPushDateTime: %w", code, err)
+		}
+	}
+	comments, err := requiredDynamoString(result.Item, "Comments")
+	if err != nil {
+		return fmt.Errorf("DynamoDB article %s: %w", code, err)
+	}
 	if err = json.Unmarshal([]byte(comments), &a.Comments); err != nil {
-		log.WithFields(log.Fields{
-			"code":     code,
-			"comments": result.Item["Comments"],
-		}).Warn("Article Comments Unmarshal Failed")
 		myutil.LogJSONDecode(err, comments)
+		return fmt.Errorf("decode DynamoDB article %s Comments: %w", code, err)
 	}
+	if a.Comments == nil {
+		a.Comments = make(Comments, 0)
+	}
+	return nil
+}
+
+func dynamoString(item map[string]*dynamodb.AttributeValue, name string) string {
+	value := item[name]
+	if value == nil || value.S == nil {
+		return ""
+	}
+	return aws.StringValue(value.S)
+}
+
+func requiredDynamoString(item map[string]*dynamodb.AttributeValue, name string) (string, error) {
+	value := item[name]
+	if value == nil || value.S == nil {
+		return "", fmt.Errorf("has no string %s value", name)
+	}
+	result := aws.StringValue(value.S)
+	if strings.TrimSpace(result) == "" {
+		return "", fmt.Errorf("has empty %s value", name)
+	}
+	return result, nil
 }
 
 func (DynamoDB) Save(a Article) error {

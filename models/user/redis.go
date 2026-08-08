@@ -2,6 +2,7 @@ package user
 
 import (
 	"encoding/json"
+	"errors"
 
 	log "github.com/Ptt-Alertor/logrus"
 
@@ -52,7 +53,10 @@ func (Redis) Save(account string, data interface{}) error {
 		return err
 	}
 
-	_, err = conn.Do("SET", key, uJSON, "NX")
+	_, err = redis.String(conn.Do("SET", key, uJSON, "NX"))
+	if errors.Is(err, redis.ErrNil) {
+		return ErrUserAlreadyExists
+	}
 	if err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 		return err
@@ -70,7 +74,10 @@ func (Redis) Update(account string, user interface{}) error {
 		return err
 	}
 
-	_, err = conn.Do("SET", key, uJSON, "XX")
+	_, err = redis.String(conn.Do("SET", key, uJSON, "XX"))
+	if errors.Is(err, redis.ErrNil) {
+		return ErrUserNotExist
+	}
 	if err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 		return err
@@ -79,19 +86,33 @@ func (Redis) Update(account string, user interface{}) error {
 }
 
 func (Redis) Find(account string, user *User) {
+	if err := (Redis{}).FindE(account, user); err != nil {
+		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
+	}
+}
+
+// FindE distinguishes a missing user (zero value, nil error) from storage or
+// JSON corruption. Reliable notification producers must not advance cursors
+// after the latter failures.
+func (Redis) FindE(account string, user *User) error {
 	conn := connectRedis()
 	defer conn.Close()
 
 	key := prefix + account
 	uJSON, err := redis.Bytes(conn.Do("GET", key))
-	if err != nil && err != redis.ErrNil {
-		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
+	if errors.Is(err, redis.ErrNil) {
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 
 	if uJSON != nil {
-		err = json.Unmarshal(uJSON, &user)
+		err = json.Unmarshal(uJSON, user)
 		if err != nil {
 			myutil.LogJSONDecode(err, uJSON)
+			return err
 		}
 	}
+	return nil
 }

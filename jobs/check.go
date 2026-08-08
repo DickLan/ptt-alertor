@@ -1,18 +1,25 @@
 package jobs
 
 import (
+	"context"
+	"sync"
+	"time"
+
 	log "github.com/Ptt-Alertor/logrus"
 
-	"github.com/Ptt-Alertor/ptt-alertor/channels/line"
-	"github.com/Ptt-Alertor/ptt-alertor/channels/mail"
-	"github.com/Ptt-Alertor/ptt-alertor/channels/messenger"
-	"github.com/Ptt-Alertor/ptt-alertor/channels/telegram"
+	"github.com/Ptt-Alertor/ptt-alertor/channels/discord"
 	"github.com/Ptt-Alertor/ptt-alertor/models/counter"
+	"github.com/Ptt-Alertor/ptt-alertor/models/user"
 )
 
-const workers = 300
+// One worker preserves notification order for the single global webhook. The
+// Discord client also serializes administrative broadcasts against this flow.
+const workers = 1
 
 var ckCh = make(chan check)
+var discordWebhook = discord.NewFromEnv()
+var incrementAlert = counter.IncrAlert
+var notificationWG sync.WaitGroup
 
 func init() {
 	for i := 0; i < workers; i++ {
@@ -21,9 +28,44 @@ func init() {
 }
 
 func messageWorker(ckCh chan check) {
-	for {
-		ck := <-ckCh
-		sendMessage(ck)
+	for ck := range ckCh {
+		func() {
+			defer notificationWG.Done()
+			sendMessage(ck)
+		}()
+	}
+}
+
+func queueCheck(ctx context.Context, value check) bool {
+	notificationWG.Add(1)
+	select {
+	case ckCh <- value:
+		return true
+	case <-ctx.Done():
+		notificationWG.Done()
+		return false
+	}
+}
+
+// WaitForNotifications waits for every alert accepted by the worker queue.
+// Call it only after all polling jobs have stopped producing new alerts.
+func WaitForNotifications() {
+	notificationWG.Wait()
+}
+
+// WaitForNotificationsContext is the bounded shutdown variant of
+// WaitForNotifications. Producers must already be stopped before it is called.
+func WaitForNotificationsContext(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		notificationWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -37,71 +79,42 @@ type check interface {
 func sendMessage(c check) {
 	cr := c.Self()
 	account := cr.Profile.Account
-	var platform string
-	if cr.Profile.Line != "" && cr.Profile.LineAccessToken == "" {
-		platform = "line"
+	if !cr.Profile.Discord {
+		return
+	}
+	prepared, dedupeKeys, shouldSend := prepareDiscordEvent(c)
+	if !shouldSend {
+		return
+	}
+	c = prepared
+	cr = c.Self()
+	if err := sendDiscord(c); err != nil {
+		discordEvents.release(dedupeKeys)
 		log.WithFields(log.Fields{
 			"account":  account,
-			"platform": platform,
+			"platform": "discord",
 			"board":    cr.board,
 			"type":     cr.subType,
 			"word":     cr.word,
-		}).Warn("Message Sent without LINE Notify Connection")
+		}).WithError(err).Error("Message Send Failed")
 		return
 	}
-	if cr.Profile.Email != "" {
-		platform = "mail"
-		sendMail(c)
-	}
-	if cr.Profile.LineAccessToken != "" {
-		platform = "line"
-		sendLineNotify(c)
-	}
-	if cr.Profile.Messenger != "" {
-		platform = "messenger"
-		sendMessenger(c)
-	}
-	if cr.Profile.Telegram != "" {
-		platform = "telegram"
-		sendTelegram(c)
-	}
-	counter.IncrAlert()
+	_ = incrementAlert()
 	log.WithFields(log.Fields{
 		"account":  account,
-		"platform": platform,
+		"platform": "discord",
 		"board":    cr.board,
 		"type":     cr.subType,
 		"word":     cr.word,
 	}).Info("Message Sent")
 }
 
-func sendMail(c check) {
-	cr := c.Self()
-	m := new(mail.Mail)
-	m.Title.BoardName = cr.board
-	m.Title.Keyword = cr.keyword
-	m.Body.Articles = cr.articles
-	m.Receiver = cr.Profile.Email
-	m.Send()
+func sendDiscord(c check) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return discordWebhook.Send(ctx, c.String())
 }
 
-func sendLine(c check) {
-	cr := c.Self()
-	line.PushTextMessage(cr.Profile.Line, c.String())
-}
-
-func sendLineNotify(c check) {
-	cr := c.Self()
-	line.Notify(cr.Profile.LineAccessToken, c.String())
-}
-
-func sendMessenger(c check) {
-	cr := c.Self()
-	m := messenger.New()
-	m.SendTextMessage(cr.Profile.Messenger, c.String())
-}
-
-func sendTelegram(c check) {
-	cr := c.Self()
-	telegram.SendTextMessage(cr.Profile.TelegramChat, c.String())
+func discordNotificationsEnabled(u user.User) bool {
+	return u.Enable && u.Profile.Discord
 }

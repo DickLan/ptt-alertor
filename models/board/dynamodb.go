@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"fmt"
 
 	log "github.com/Ptt-Alertor/logrus"
 	"github.com/aws/aws-sdk-go/aws"
@@ -19,9 +20,21 @@ type DynamoDB struct {
 }
 
 func (DynamoDB) GetArticles(boardName string) (articles article.Articles) {
+	articles, _, err := (DynamoDB{}).GetArticlesE(boardName)
+	if err != nil {
+		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error("DynamoDB Find Board Failed")
+	}
+	return articles
+}
+
+// GetArticlesE distinguishes a missing board cursor from an AWS or decoding
+// failure. Reliable notification producers must not turn either failure into a
+// fresh baseline that advances past unseen articles.
+func (DynamoDB) GetArticlesE(boardName string) (articles article.Articles, initialized bool, err error) {
 	dynamo := dynamodb.New(session.New())
 	result, err := dynamo.GetItem(&dynamodb.GetItemInput{
-		TableName: aws.String(tableName),
+		TableName:      aws.String(tableName),
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]*dynamodb.AttributeValue{
 			"Board": {
 				S: aws.String(boardName),
@@ -29,24 +42,29 @@ func (DynamoDB) GetArticles(boardName string) (articles article.Articles) {
 		},
 	})
 	if err != nil {
-		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error("DynamoDB Find Board Failed")
-		return
+		return nil, false, err
 	}
 
 	if len(result.Item) == 0 {
-		log.WithField("board", boardName).Warn("Board Not Found")
-		return
+		return nil, false, nil
 	}
 
-	articlesJSON := aws.StringValue(result.Item["Articles"].S)
-
-	if articlesJSON != "" {
-		err = json.Unmarshal([]byte(articlesJSON), &articles)
-		if err != nil {
-			myutil.LogJSONDecode(err, articlesJSON)
-		}
+	attribute, exists := result.Item["Articles"]
+	if !exists || attribute == nil || attribute.S == nil {
+		return nil, true, fmt.Errorf("DynamoDB board %s has no Articles value", boardName)
 	}
-	return articles
+	articlesJSON := aws.StringValue(attribute.S)
+	if articlesJSON == "" {
+		return make(article.Articles, 0), true, nil
+	}
+	if err = json.Unmarshal([]byte(articlesJSON), &articles); err != nil {
+		myutil.LogJSONDecode(err, articlesJSON)
+		return nil, true, err
+	}
+	if articles == nil {
+		articles = make(article.Articles, 0)
+	}
+	return articles, true, nil
 }
 
 func (DynamoDB) Save(boardName string, articles article.Articles) error {

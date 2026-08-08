@@ -1,0 +1,53 @@
+name: ptt-alertor
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 2m30s
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "9090"
+      REDIS_ENDPOINT: redis
+      REDIS_PORT: "6379"
+      STORAGE_BACKEND: redis
+      TZ: Asia/Taipei
+      # Operator settings, including Discord secrets and PTT polling controls,
+      # come from env_file above. Do not duplicate them with ${...} mappings:
+      # Compose gives the host shell precedence during interpolation, which can
+      # unexpectedly override the reviewed .env file.
+    ports:
+      # The authenticated APIs use HTTP Basic. Keep the direct listener local;
+      # expose it remotely only through an HTTPS reverse proxy and firewall.
+      - "127.0.0.1:${APP_PORT:-9090}:9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  redis-data:

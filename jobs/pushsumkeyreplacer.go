@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"context"
+
 	log "github.com/Ptt-Alertor/logrus"
 	"github.com/Ptt-Alertor/ptt-alertor/models/pushsum"
 )
@@ -12,7 +14,14 @@ func NewPushSumKeyReplacer() *PushSumKeyReplacer {
 }
 
 func (r PushSumKeyReplacer) Run() {
-	if err := pushsum.ReplaceBenchKeys(); err != nil {
+	r.RunContext(context.Background())
+}
+
+func (r PushSumKeyReplacer) RunContext(ctx context.Context) {
+	if err := pushsum.ReplaceBenchKeysContext(ctx); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		log.WithError(err).Error("Replace Pushsum Key Failed")
 	}
 	log.Info("Replace Pushsum Key Done")

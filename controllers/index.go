@@ -5,24 +5,20 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-
 	"strings"
+	"sync"
 
-	"github.com/Ptt-Alertor/ptt-alertor/connections"
+	"github.com/Ptt-Alertor/ptt-alertor/channels/discord"
 	"github.com/Ptt-Alertor/ptt-alertor/models/counter"
 	"github.com/Ptt-Alertor/ptt-alertor/models/top"
 	"github.com/Ptt-Alertor/ptt-alertor/shorturl"
-	"github.com/garyburd/redigo/redis"
 	"github.com/julienschmidt/httprouter"
-	"golang.org/x/net/websocket"
 )
 
 var tpls = []string{
 	"public/docs.html",
 	"public/top.html",
-	"public/telegram.html",
-	"public/messenger.html",
-	"public/line.html",
+	"public/discord.html",
 	"public/tpls/head.tpl",
 	"public/tpls/header.tpl",
 	"public/tpls/slogan.tpl",
@@ -33,50 +29,39 @@ var tpls = []string{
 }
 
 var (
-	templates = template.Must(template.ParseFiles(tpls...))
-	wsHost    = os.Getenv("APP_WS_HOST")
-	s3Domain  = os.Getenv("S3_DOMAIN")
+	templatesOnce sync.Once
+	templates     *template.Template
+	templatesErr  error
+	s3Domain      = os.Getenv("S3_DOMAIN")
 )
+
+func pageTemplates() (*template.Template, error) {
+	templatesOnce.Do(func() {
+		templates, templatesErr = template.ParseFiles(tpls...)
+	})
+	return templates, templatesErr
+}
 
 // Index Handles router "/" request
 func Index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	LineIndex(w, r, nil)
-}
-
-// LineIndex Handles router "/line" request
-func LineIndex(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	err := templates.ExecuteTemplate(w, "line.html", struct {
-		URI      string
-		WSHost   string
-		Count    []string
-		S3Domain string
-	}{"line", wsHost, count(), s3Domain})
+	tpls, err := pageTemplates()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "page templates are unavailable", http.StatusInternalServerError)
+		return
 	}
-}
-
-// MessengerIndex Handles router "/messenger" request
-func MessengerIndex(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	err := templates.ExecuteTemplate(w, "messenger.html", struct {
-		URI      string
-		WSHost   string
-		Count    []string
-		S3Domain string
-	}{"messenger", wsHost, count(), s3Domain})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-// TelegramIndex Handles router "/telegram" request
-func TelegramIndex(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	err := templates.ExecuteTemplate(w, "telegram.html", struct {
-		URI      string
-		WSHost   string
-		Count    []string
-		S3Domain string
-	}{"telegram", wsHost, count(), s3Domain})
+	err = tpls.ExecuteTemplate(w, "discord.html", struct {
+		URI               string
+		Count             []string
+		S3Domain          string
+		DiscordConfigured bool
+		JobsEnabled       bool
+	}{
+		URI:               "",
+		Count:             count(),
+		S3Domain:          s3Domain,
+		DiscordConfigured: discord.NewFromEnv().Validate() == nil,
+		JobsEnabled:       strings.EqualFold(strings.TrimSpace(os.Getenv("JOBS_ENABLED")), "true"),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -99,6 +84,11 @@ func count() (counterStrs []string) {
 
 // Top Handles router "/top" request, it shows top rank of keywords, authors, pushsum
 func Top(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	tpls, err := pageTemplates()
+	if err != nil {
+		http.Error(w, "page templates are unavailable", http.StatusInternalServerError)
+		return
+	}
 	count := 100
 	keywords := top.ListKeywordWithScore(count)
 	authors := top.ListAuthorWithScore(count)
@@ -116,7 +106,7 @@ func Top(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		pushsum,
 		s3Domain,
 	}
-	err := templates.ExecuteTemplate(w, "top.html", data)
+	err = tpls.ExecuteTemplate(w, "top.html", data)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -124,7 +114,12 @@ func Top(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 
 // Docs shows advanced intructions
 func Docs(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	err := templates.ExecuteTemplate(w, "docs.html", struct {
+	tpls, err := pageTemplates()
+	if err != nil {
+		http.Error(w, "page templates are unavailable", http.StatusInternalServerError)
+		return
+	}
+	err = tpls.ExecuteTemplate(w, "docs.html", struct {
 		URI      string
 		S3Domain string
 	}{
@@ -148,32 +143,5 @@ func Redirect(w http.ResponseWriter, r *http.Request, params httprouter.Params) 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		t.Execute(w, nil)
-	}
-}
-
-// WebSocket upgrades http request to websocket
-func WebSocket(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
-	websocket.Handler(counterHandler).ServeHTTP(w, r)
-}
-
-func counterHandler(ws *websocket.Conn) {
-	conn := connections.Redis()
-	defer conn.Close()
-	psc := redis.PubSubConn{Conn: conn}
-	psc.Subscribe("alert-counter")
-	defer psc.Unsubscribe("alert-counter")
-	for {
-		switch v := psc.Receive().(type) {
-		case redis.Message:
-			_, err := ws.Write([]byte(v.Data))
-			if err != nil {
-				ws.Close()
-				return
-			}
-		case redis.Subscription:
-			// fmt.Printf("%s: %s %d\n", v.Channel, v.Kind, v.Count)
-		case error:
-			return
-		}
 	}
 }

@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"time"
 
 	log "github.com/Ptt-Alertor/logrus"
@@ -21,19 +22,29 @@ func NewCategoryCleaner() *categoryCleaner {
 }
 
 func (cc categoryCleaner) Run() {
+	cc.RunContext(context.Background())
+}
+
+func (cc categoryCleaner) RunContext(ctx context.Context) {
 	boardNames := myutil.StringSlice(models.Board().List())
 	boardNames.AppendNonRepeat(myutil.StringSlice(pushsum.List()), false)
 
 	for _, boardName := range boardNames {
-		time.Sleep(100 * time.Millisecond)
-		if !rss.CheckBoardExist(boardName) {
+		if !waitForContext(ctx, 100*time.Millisecond) {
+			return
+		}
+		exists, err := rss.CheckBoardExistContext(ctx, boardName)
+		if err != nil {
+			log.WithField("category", boardName).WithError(err).Warn("Skip Category Cleanup")
+			continue
+		}
+		if !exists {
 			log.WithField("category", boardName).Info("Delete Category")
 			cc.CleanAccountSetting(boardName)
 			cc.CleanKeywordAuthorBoard(boardName)
 			cc.CleanPushsumBoard(boardName)
 		}
 	}
-
 }
 
 func (cc categoryCleaner) CleanAccountSetting(boardName string) {

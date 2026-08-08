@@ -57,22 +57,33 @@ func (Redis) Remove(boardName string) error {
 }
 
 func (Redis) GetArticles(boardName string) (articles article.Articles) {
+	articles, _, err := (Redis{}).GetArticlesE(boardName)
+	if err != nil {
+		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
+	}
+	return articles
+}
+
+// GetArticlesE distinguishes an uninitialized board cursor from a valid empty
+// snapshot and from Redis/JSON failure.
+func (Redis) GetArticlesE(boardName string) (articles article.Articles, initialized bool, err error) {
 	conn := connections.Redis()
 	defer conn.Close()
 
 	key := prefix + boardName
 	articlesJSON, err := redis.Bytes(conn.Do("GET", key))
-	if err != nil && err != redis.ErrNil {
-		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
+	if err == redis.ErrNil {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
 	}
 
-	if articlesJSON != nil {
-		err = json.Unmarshal(articlesJSON, &articles)
-		if err != nil {
-			myutil.LogJSONDecode(err, articlesJSON)
-		}
+	if err = json.Unmarshal(articlesJSON, &articles); err != nil {
+		myutil.LogJSONDecode(err, articlesJSON)
+		return nil, true, err
 	}
-	return articles
+	return articles, true, nil
 }
 
 func (Redis) Save(boardName string, articles article.Articles) error {
@@ -84,10 +95,7 @@ func (Redis) Save(boardName string, articles article.Articles) error {
 		myutil.LogJSONEncode(err, articles)
 		return err
 	}
-	conn.Send("WATCH", prefix+boardName)
-	conn.Send("MULTI")
-	conn.Send("SET", prefix+boardName, articlesJSON)
-	_, err = conn.Do("EXEC")
+	_, err = conn.Do("SET", prefix+boardName, articlesJSON)
 	if err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 	}

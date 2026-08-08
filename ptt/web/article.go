@@ -3,27 +3,39 @@ package web
 import "golang.org/x/net/html"
 
 func findTitleDiv(node *html.Node) *html.Node {
-	return findDivByClassName(node, "title")
+	return findDivWithClasses(node, "title")
 }
 
 func findMetaDiv(node *html.Node) *html.Node {
-	return findDivByClassName(node, "meta")
+	return findDivWithClasses(node, "meta")
 }
 
 func findDateDiv(node *html.Node) *html.Node {
-	return findDivByClassName(node, "date")
+	return findDivWithClasses(node, "date")
 }
 
 func findAuthorDiv(node *html.Node) *html.Node {
-	return findDivByClassName(node, "author")
+	return findDivWithClasses(node, "author")
 }
 
 func findDividerDiv(node *html.Node) *html.Node {
-	return findDivByClassName(node, "r-list-sep")
+	return findDivWithClasses(node, "r-list-sep")
 }
 
 func findOgTitleMeta(node *html.Node) *html.Node {
 	return findMeta(node, "og:title")
+}
+
+func findMainArticleContent(node *html.Node) *html.Node {
+	if node.Type != html.ElementNode || node.Data != "div" {
+		return nil
+	}
+	for _, attr := range node.Attr {
+		if attr.Key == "id" && attr.Val == "main-content" {
+			return node
+		}
+	}
+	return nil
 }
 
 func findEmailProtected(node *html.Node) *html.Node {

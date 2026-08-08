@@ -1,6 +1,8 @@
 package pushsum
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -100,13 +102,19 @@ func RemoveSubscriber(board, account string) error {
 }
 
 func ListSubscribers(board string) []string {
-	conn := connections.Redis()
-	defer conn.Close()
-	subs, err := redis.Strings(conn.Do("SMEMBERS", prefix+board+":subs"))
+	subs, err := ListSubscribersE(board)
 	if err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 	}
 	return subs
+}
+
+// ListSubscribersE distinguishes no subscribers from a Redis failure.
+func ListSubscribersE(board string) ([]string, error) {
+	conn := connections.Redis()
+	defer conn.Close()
+	subs, err := redis.Strings(conn.Do("SMEMBERS", prefix+board+":subs"))
+	return subs, err
 }
 
 func Destroy(board string) error {
@@ -120,36 +128,125 @@ func Destroy(board string) error {
 	return err
 }
 
-func DiffList(account, board, kind string, ids ...int) []int {
-	if len(ids) == 0 {
-		return []int{}
-	}
-	nowKey := prefix + account + ":" + board + ":" + kind + ":now"
-	baseKey := prefix + account + ":" + board + ":" + kind + ":base"
-	benchKey := prefix + account + ":" + board + ":" + kind + ":bench"
+// DiffState describes which current identities have not been committed for a
+// particular threshold revision. Initialized is false only for the first
+// baseline; it remains true across the 48-hour base/bench rotation.
+type DiffState struct {
+	Initialized bool
+	New         []string
+}
+
+func diffKeyPrefix(account, board, kind, revision string) string {
+	return prefix + account + ":" + strings.ToLower(board) + ":" + kind + ":" + revision + ":"
+}
+
+// PendingDiff reads notification state without advancing it. A caller can
+// durably enqueue every item in New and only then call CommitDiff, eliminating
+// the old cursor-before-delivery ordering.
+func PendingDiff(account, board, kind, revision string, identities ...string) (DiffState, error) {
+	keys := diffKeyPrefix(account, board, kind, revision)
 	conn := connections.Redis()
 	defer conn.Close()
-	bl, err := redis.Bool(conn.Do("EXISTS", baseKey))
-	conn.Send("MULTI")
-	conn.Send("SADD", redis.Args{}.Add(nowKey).AddFlat(ids)...)
-	conn.Send("SDIFF", nowKey, baseKey, benchKey)
-	conn.Send("DEL", nowKey)
-	r, err := redis.Values(conn.Do("EXEC"))
+	initialized, err := redis.Bool(conn.Do("EXISTS", keys+"initialized"))
+	if err != nil {
+		return DiffState{}, err
+	}
+	base, err := redis.Strings(conn.Do("SMEMBERS", keys+"base"))
+	if err != nil {
+		return DiffState{}, err
+	}
+	bench, err := redis.Strings(conn.Do("SMEMBERS", keys+"bench"))
+	if err != nil {
+		return DiffState{}, err
+	}
+	state := DiffState{Initialized: initialized}
+	if !initialized {
+		return state, nil
+	}
+	known := make(map[string]struct{}, len(base)+len(bench))
+	for _, identity := range append(base, bench...) {
+		known[identity] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		identity = strings.TrimSpace(identity)
+		if identity == "" {
+			continue
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			continue
+		}
+		seen[identity] = struct{}{}
+		if _, exists := known[identity]; !exists {
+			state.New = append(state.New, identity)
+		}
+	}
+	return state, nil
+}
+
+// CommitDiff advances a threshold revision after its outbox writes succeed.
+func CommitDiff(account, board, kind, revision string, identities ...string) error {
+	keys := diffKeyPrefix(account, board, kind, revision)
+	conn := connections.Redis()
+	defer conn.Close()
+	if err := conn.Send("MULTI"); err != nil {
+		return err
+	}
+	if len(identities) > 0 {
+		args := redis.Args{}.Add(keys + "base")
+		for _, identity := range identities {
+			if identity = strings.TrimSpace(identity); identity != "" {
+				args = args.Add(identity)
+			}
+		}
+		if len(args) > 1 {
+			if err := conn.Send("SADD", args...); err != nil {
+				return err
+			}
+		}
+	}
+	if err := conn.Send("SET", keys+"initialized", "1"); err != nil {
+		return err
+	}
+	values, err := redis.Values(conn.Do("EXEC"))
+	if err != nil {
+		return err
+	}
+	for _, value := range values {
+		if transactionErr, ok := value.(redis.Error); ok {
+			return transactionErr
+		}
+	}
+	return nil
+}
+
+// DiffList is retained for legacy callers. New reliable paths should use
+// PendingDiff + durable enqueue + CommitDiff with a threshold revision.
+func DiffList(account, board, kind string, ids ...int) []int {
+	identities := make([]string, 0, len(ids))
+	for _, id := range ids {
+		identities = append(identities, strconv.Itoa(id))
+	}
+	state, err := PendingDiff(account, board, kind, "legacy", identities...)
 	if err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
 		return []int{}
 	}
-	ids, err = redis.Ints(r[1], err)
-	if len(ids) > 0 {
-		_, err = conn.Do("SADD", redis.Args{}.Add(baseKey).AddFlat(ids)...)
-	}
-	if err != nil {
+	if err := CommitDiff(account, board, kind, "legacy", identities...); err != nil {
 		log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
-	}
-	if !bl {
 		return []int{}
 	}
-	return ids
+	if !state.Initialized {
+		return []int{}
+	}
+	result := make([]int, 0, len(state.New))
+	for _, identity := range state.New {
+		id, err := strconv.Atoi(identity)
+		if err == nil {
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 func DelDiffList(account, board, kind string) error {
@@ -167,21 +264,31 @@ func DelDiffList(account, board, kind string) error {
 }
 
 func ReplaceBenchKeys() error {
-	baseKeyTemplate := prefix + "*:*:*:base"
+	return ReplaceBenchKeysContext(context.Background())
+}
+
+func ReplaceBenchKeysContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	baseKeyTemplate := prefix + "*:*:*:*:base"
 	conn := connections.Redis()
 	defer conn.Close()
 	baseKeys, err := redis.Strings(conn.Do("KEYS", baseKeyTemplate))
+	if err != nil {
+		return fmt.Errorf("list push-sum state for rotation: %w", err)
+	}
 	for _, baseKey := range baseKeys {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		key := strings.TrimSuffix(baseKey, "base") + "bench"
-		conn.Send("WATCH", key)
-		conn.Send("MULTI")
-		conn.Send("RENAME", baseKey, key)
-		_, err = conn.Do("EXEC")
-		if err != nil {
+		if _, err = conn.Do("RENAME", baseKey, key); err != nil {
 			log.WithField("runtime", myutil.BasicRuntimeInfo()).WithError(err).Error()
+			return fmt.Errorf("rotate push-sum state %s: %w", baseKey, err)
 		}
 	}
-	return err
+	return nil
 }
 
 func RenameDiffListKeys(preBoard, postBoard string) error {

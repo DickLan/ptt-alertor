@@ -32,6 +32,7 @@ func TestStringSlice_RemoveStringsSpace(t *testing.T) {
 		ss     *StringSlice
 		result *StringSlice
 	}{
+		{"zero length", &StringSlice{}, &StringSlice{}},
 		{"empty", &StringSlice{""}, &StringSlice{""}},
 		{"single", &StringSlice{"a b"}, &StringSlice{"ab"}},
 		{"multiple", &StringSlice{"a b", "c d"}, &StringSlice{"ab", "cd"}},

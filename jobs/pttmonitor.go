@@ -1,56 +1,117 @@
 package jobs
 
 import (
-	"net/http"
+	"context"
 	"time"
 
 	log "github.com/Ptt-Alertor/logrus"
+	"github.com/Ptt-Alertor/ptt-alertor/ptt/web"
 )
 
+type pttHealthCheck func(context.Context) error
+
 type pttMonitor struct {
-	duration time.Duration
-	retry    int
+	duration    time.Duration
+	retry       int
+	healthCheck pttHealthCheck
 }
 
 func NewPttMonitor() *pttMonitor {
 	return &pttMonitor{
-		duration: 1 * time.Minute,
-		retry:    3,
+		duration:    1 * time.Minute,
+		retry:       3,
+		healthCheck: web.CheckSiteContext,
 	}
 }
 
-func (pm pttMonitor) Run() {
+func (pm *pttMonitor) Run() {
+	pm.RunContext(context.Background())
+}
+
+// RunContext monitors PTT until ctx is canceled. It only reports health: the
+// shared PTT limiter and cooldown policy are responsible for reducing load, so
+// the monitor must not stop or restart the singleton checker jobs.
+func (pm *pttMonitor) RunContext(ctx context.Context) {
 	log.Info("Start Ptt Monitor")
 
-	var errorCounter = 0
-	var url = "https://www.ptt.cc/bbs/index.html"
 	ticker := time.NewTicker(pm.duration)
-	for range ticker.C {
-		resp, err := http.Get(url)
-		if err != nil {
-			log.WithError(err).Error("HTTP Get Error")
-		}
-		if err == nil && resp.StatusCode == http.StatusOK {
-			log.Info("Ptt is alive")
-			if errorCounter >= pm.retry {
-				log.Info("Ptt is back to life")
-				go NewChecker().Run()
-				go NewPushSumChecker().Run()
-				go NewCommentChecker().Run()
+	defer ticker.Stop()
+	state := newPttMonitorState(pm.retry)
+	healthCheck := pm.healthCheck
+	if healthCheck == nil {
+		healthCheck = web.CheckSiteContext
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			err := healthCheck(ctx)
+			if ctx.Err() != nil {
+				return
 			}
-			errorCounter = 0
+			logPttHealth(state.observe(err), err)
 		}
-		if err == nil && resp.StatusCode != http.StatusOK {
-			if errorCounter < pm.retry {
-				log.Info("Ptt is dying")
-			}
-			if errorCounter == pm.retry {
-				log.Info("Ptt is Dead")
-				go NewChecker().Stop()
-				go NewPushSumChecker().Stop()
-				go NewCommentChecker().Stop()
-			}
-			errorCounter++
+	}
+}
+
+type pttMonitorEvent uint8
+
+const (
+	pttAlive pttMonitorEvent = iota
+	pttDying
+	pttDead
+	pttStillDead
+	pttRecovered
+)
+
+type pttMonitorState struct {
+	failures int
+	retry    int
+	dead     bool
+}
+
+func newPttMonitorState(retry int) *pttMonitorState {
+	if retry < 1 {
+		retry = 1
+	}
+	return &pttMonitorState{retry: retry}
+}
+
+func (state *pttMonitorState) observe(err error) pttMonitorEvent {
+	if err == nil {
+		wasDead := state.dead
+		state.failures = 0
+		state.dead = false
+		if wasDead {
+			return pttRecovered
 		}
+		return pttAlive
+	}
+
+	state.failures++
+	if state.failures < state.retry {
+		return pttDying
+	}
+	if !state.dead {
+		state.dead = true
+		return pttDead
+	}
+	return pttStillDead
+}
+
+func logPttHealth(event pttMonitorEvent, err error) {
+	switch event {
+	case pttAlive:
+		log.Info("Ptt is alive")
+	case pttDying:
+		log.WithError(err).Warn("Ptt is dying")
+	case pttDead:
+		log.WithError(err).Error("Ptt is dead")
+	case pttStillDead:
+		log.WithError(err).Warn("Ptt is still unavailable")
+	case pttRecovered:
+		log.Info("Ptt is back to life")
 	}
 }

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+{{template "head" .}}
+
+<body>
+    <div class="container">
+        {{template "header"}}
+        {{template "slogan"}}
+        <div id="main" class="row bg-info">
+            <div class="col-md-7">
+                <div class="panel panel-primary">
+                    <div class="panel-heading">Discord Webhook 通知</div>
+                    <div class="panel-body">
+                        {{if .DiscordConfigured}}
+                        <p class="lead text-success">Webhook URL 格式有效；實際送達仍須以管理廣播確認。</p>
+                        {{if .JobsEnabled}}
+                        <p>背景工作設定為啟用。</p>
+                        {{else}}
+                        <p>目前 JOBS_ENABLED=false，背景工作尚未啟用。</p>
+                        {{end}}
+                        {{else}}
+                        <p class="lead text-warning">Webhook 未設定或 URL 格式無效；服務仍可啟動，但背景輪詢會自動暫停，以免漏失通知。</p>
+                        {{end}}
+                        <p>Webhook 只由伺服器環境變數讀取，不會顯示或儲存在使用者資料。</p>
+                        <p>新部署請先保持 JOBS_ENABLED=false，以管理廣播確認 webhook 真正送達，再啟用背景工作。請透過驗證 API 與 command API 管理訂閱；完整 curl 範例請見專案 README。</p>
+                        {{template "counter" .}}
+                    </div>
+                </div>
+            </div>
+            <div id="command" class="col-md-5">
+                {{template "command"}}
+            </div>
+        </div>
+        {{template "footer"}}
+    </div>
+    {{template "script" .}}
+</body>
+
+</html>

@@ -1,7 +1,6 @@
 {{define "footer"}}
 <footer class="footer center-text">
-    <p>如果喜歡 Ptt Alertor，可以捐些 P 幣給 ChoDino 喔！
-    &copy; 2017 Ptt Alertor.
+    <p>Ptt Alertor &copy; 2017–2026.
         <a class="fa-icon" target="_blank" href="https://facebook.com/pttalertor">
             <i class="fa fa-facebook-official fa-2x" aria-hidden="true"></i>
         </a>

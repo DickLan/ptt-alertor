@@ -1,6 +1,8 @@
 package web
 
 import (
+	"strings"
+
 	"golang.org/x/net/html"
 )
 
@@ -38,6 +40,56 @@ func findDivByClassName(node *html.Node, className string) *html.Node {
 		}
 	}
 	return nil
+}
+
+func findDivWithClasses(node *html.Node, classNames ...string) *html.Node {
+	if node.Type != html.ElementNode || node.Data != "div" {
+		return nil
+	}
+	classes := make(map[string]struct{})
+	for _, attribute := range node.Attr {
+		if attribute.Key == "class" {
+			for _, className := range strings.Fields(attribute.Val) {
+				classes[className] = struct{}{}
+			}
+		}
+	}
+	for _, className := range classNames {
+		if _, found := classes[className]; !found {
+			return nil
+		}
+	}
+	return node
+}
+
+func findDivByID(node *html.Node, id string) *html.Node {
+	if node.Type != html.ElementNode || node.Data != "div" {
+		return nil
+	}
+	for _, attribute := range node.Attr {
+		if attribute.Key == "id" && attribute.Val == id {
+			return node
+		}
+	}
+	return nil
+}
+
+func nodeText(node *html.Node) string {
+	if node == nil {
+		return ""
+	}
+	var builder strings.Builder
+	var appendText func(*html.Node)
+	appendText = func(current *html.Node) {
+		if current.Type == html.TextNode {
+			builder.WriteString(current.Data)
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			appendText(child)
+		}
+	}
+	appendText(node)
+	return builder.String()
 }
 
 func findSpanByClassName(node *html.Node, className string) *html.Node {

@@ -1,7 +1,9 @@
 package user
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -30,9 +32,10 @@ func TestUser_Save(t *testing.T) {
 		u       User
 		wantErr bool
 	}{
-		{"ok", User{Profile: Profile{Account: "liam.lai@gmail.com", Email: "liam.lai@gmail.com"}, drive: new(Mock)}, false},
-		{"duplicate", User{Profile: Profile{Account: "dinos80152@gmail.com", Email: "dinos80152@gmail.com"}, drive: new(Mock)}, true},
-		{"not enough data", User{Profile: Profile{Account: "dinos80152@gmail.com"}, drive: new(Mock)}, true},
+		{"discord", User{Profile: Profile{Account: "discord-user", Discord: true}, drive: new(Mock)}, false},
+		{"legacy only", User{Profile: Profile{Account: "email-user", Email: "user@example.com"}, drive: new(Mock)}, true},
+		{"duplicate", User{Profile: Profile{Account: "dinos80152@gmail.com", Discord: true}, drive: new(Mock)}, true},
+		{"notifications disabled", User{Profile: Profile{Account: "disabled-user"}, drive: new(Mock)}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,6 +43,26 @@ func TestUser_Save(t *testing.T) {
 				t.Errorf("User.Save() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestUserSaveRejectsUnaddressableAccount(t *testing.T) {
+	invalid := []string{
+		"unreachable/account",
+		"back\\slash",
+		"query?value",
+		"fragment#value",
+		"encoded%2Fslash",
+		" leading-space",
+		"trailing-space ",
+		"line\nbreak",
+		strings.Repeat("a", 129),
+	}
+	for _, account := range invalid {
+		u := User{Profile: Profile{Account: account, Discord: true}, drive: new(Mock)}
+		if err := u.Save(); !errors.Is(err, ErrAccountInvalid) {
+			t.Errorf("Save() account %q error = %v, want ErrAccountInvalid", account, err)
+		}
 	}
 }
 

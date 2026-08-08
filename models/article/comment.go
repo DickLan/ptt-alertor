@@ -2,6 +2,7 @@ package article
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -20,9 +21,10 @@ func (c Comment) String() string {
 type Comments []Comment
 
 func (cs Comments) String() string {
-	var content string
+	var content strings.Builder
 	for _, p := range cs {
-		content += "\n" + p.String()
+		content.WriteByte('\n')
+		content.WriteString(p.String())
 	}
-	return content
+	return content.String()
 }

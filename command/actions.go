@@ -1,30 +1,64 @@
 package command
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"strings"
 
-	"github.com/Ptt-Alertor/ptt-alertor/models"
-	"github.com/Ptt-Alertor/ptt-alertor/models/author"
-	"github.com/Ptt-Alertor/ptt-alertor/models/keyword"
-	"github.com/Ptt-Alertor/ptt-alertor/models/pushsum"
+	"github.com/Ptt-Alertor/ptt-alertor/models/board"
 	"github.com/Ptt-Alertor/ptt-alertor/models/subscription"
 	"github.com/Ptt-Alertor/ptt-alertor/models/user"
 	"github.com/Ptt-Alertor/ptt-alertor/myutil"
 )
 
-type updateAction func(u *user.User, sub subscription.Subscription, inputs ...string) error
+type updateAction func(ctx context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error
 
-func addKeywords(u *user.User, sub subscription.Subscription, inputs ...string) error {
-	sub.Keywords = inputs
-	err := u.Subscribes.Add(sub)
-	if err == nil {
-		err = keyword.AddSubscriber(sub.Board, u.Profile.Account)
+var errArticleSubscriptionLimit = errors.New("推文追蹤最多 50 篇，輸入「推文清單」，整理追蹤列表。")
+var errWildcardAdd = errors.New("新增不可使用 *；若要追蹤全部文章，請使用 regexp:.*")
+var errInvalidAuthorTitleKeyword = errors.New("作者與標題複合條件格式錯誤；請使用 author:lushin&賣，作者與每個標題詞皆不可空白")
+var verifyBoardExist = board.VerifyBoardExistContext
+
+type boardValidationCacheContextKey struct{}
+type boardValidationCache map[string]error
+
+func addKeywords(ctx context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
+	if containsWildcard(inputs) {
+		return errWildcardAdd
 	}
-	return err
+	if err := validateAuthorTitleKeywords(inputs); err != nil {
+		return err
+	}
+	sub.Keywords = inputs
+	if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
+		return err
+	}
+	u.Subscribes.AddVerified(sub)
+	return nil
 }
 
-func removeKeywords(u *user.User, sub subscription.Subscription, inputs ...string) error {
+// validateAuthorTitleKeywords is deliberately called by the shared mutation
+// action so both the Chinese command and add -k path enforce the same grammar.
+// Deletion does not call it: malformed or legacy values must remain removable.
+func validateAuthorTitleKeywords(inputs []string) error {
+	for _, input := range inputs {
+		if !strings.HasPrefix(input, "author:") || !strings.Contains(input, "&") {
+			continue
+		}
+		terms := strings.Split(input, "&")
+		if strings.TrimSpace(strings.TrimPrefix(terms[0], "author:")) == "" {
+			return errInvalidAuthorTitleKeyword
+		}
+		for _, term := range terms[1:] {
+			if strings.TrimSpace(term) == "" {
+				return errInvalidAuthorTitleKeyword
+			}
+		}
+	}
+	return nil
+}
+
+func removeKeywords(_ context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
 	sub.Keywords = inputs
 	if inputs[0] == "*" {
 		for _, uSub := range u.Subscribes {
@@ -34,28 +68,32 @@ func removeKeywords(u *user.User, sub subscription.Subscription, inputs ...strin
 			}
 		}
 	}
-	err := u.Subscribes.Remove(sub)
-	if err == nil {
-		for _, uSub := range u.Subscribes {
-			if strings.EqualFold(sub.Board, uSub.Board) && len(uSub.Keywords) > 0 {
-				return nil
-			}
-		}
-		err = keyword.RemoveSubscriber(sub.Board, u.Profile.Account)
-	}
-	return err
+	return u.Subscribes.Remove(sub)
 }
 
-func addAuthors(u *user.User, sub subscription.Subscription, inputs ...string) error {
+func addAuthors(ctx context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
+	if containsWildcard(inputs) {
+		return errWildcardAdd
+	}
 	sub.Authors = inputs
-	err := u.Subscribes.Add(sub)
-	if err == nil {
-		err = author.AddSubscriber(sub.Board, u.Profile.Account)
+	if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
+		return err
 	}
-	return err
+	u.Subscribes.AddVerified(sub)
+	return nil
 }
 
-func removeAuthors(u *user.User, sub subscription.Subscription, inputs ...string) error {
+func containsWildcard(inputs []string) bool {
+	for _, input := range inputs {
+		input = strings.Trim(strings.TrimSpace(input), `"'`)
+		if input == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func removeAuthors(_ context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
 	sub.Authors = inputs
 	if inputs[0] == "*" {
 		for _, uSub := range u.Subscribes {
@@ -65,19 +103,10 @@ func removeAuthors(u *user.User, sub subscription.Subscription, inputs ...string
 			}
 		}
 	}
-	err := u.Subscribes.Remove(sub)
-	if err == nil {
-		for _, uSub := range u.Subscribes {
-			if strings.EqualFold(sub.Board, uSub.Board) && len(uSub.Authors) > 0 {
-				return nil
-			}
-		}
-		err = author.RemoveSubscriber(sub.Board, u.Profile.Account)
-	}
-	return err
+	return u.Subscribes.Remove(sub)
 }
 
-func updatePushUp(u *user.User, sub subscription.Subscription, inputs ...string) error {
+func updatePushUp(ctx context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
 	up, err := strconv.Atoi(inputs[0])
 	if err != nil {
 		return err
@@ -88,14 +117,14 @@ func updatePushUp(u *user.User, sub subscription.Subscription, inputs ...string)
 		}
 	}
 	sub.PushSum.Up = up
-	err = u.Subscribes.Update(sub)
-	if err == nil {
-		err = dealPushSum(u.Profile.Account, sub)
+	if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
+		return err
 	}
-	return err
+	u.Subscribes.UpdateVerified(sub)
+	return nil
 }
 
-func updatePushDown(u *user.User, sub subscription.Subscription, inputs ...string) error {
+func updatePushDown(ctx context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
 	down, err := strconv.Atoi(inputs[0])
 	if err != nil {
 		return err
@@ -106,43 +135,56 @@ func updatePushDown(u *user.User, sub subscription.Subscription, inputs ...strin
 		}
 	}
 	sub.PushSum.Down = down
-	err = u.Subscribes.Update(sub)
-	if err == nil {
-		err = dealPushSum(u.Profile.Account, sub)
+	if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
+		return err
+	}
+	u.Subscribes.UpdateVerified(sub)
+	return nil
+}
+
+func verifyBoardForMutation(ctx context.Context, boardName string) error {
+	cache, _ := ctx.Value(boardValidationCacheContextKey{}).(boardValidationCache)
+	cacheKey := strings.ToLower(strings.TrimSpace(boardName))
+	if cached, ok := cache[cacheKey]; ok {
+		return cached
+	}
+	exists, suggestion, err := verifyBoardExist(ctx, boardName)
+	if err != nil {
+		if cache != nil {
+			cache[cacheKey] = err
+		}
+		return err
+	}
+	if !exists {
+		err = board.BoardNotExistError{Suggestion: suggestion}
+	}
+	if cache != nil {
+		cache[cacheKey] = err
 	}
 	return err
 }
 
-func dealPushSum(account string, sub subscription.Subscription) (err error) {
-	if !pushsum.Exist(sub.Board) {
-		err = pushsum.Add(sub.Board)
+func addArticles(_ context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
+	sub.Articles = inputs
+	articleCode := inputs[0]
+	count := 0
+	for _, current := range u.Subscribes {
+		count += len(current.Articles)
+		for _, existingCode := range current.Articles {
+			if existingCode == articleCode {
+				u.Subscribes.AddVerified(sub)
+				return nil
+			}
+		}
 	}
-	if sub.Up == 0 {
-		err = pushsum.DelDiffList(account, sub.Board, "up")
+	if count >= subArticlesLimit {
+		return errArticleSubscriptionLimit
 	}
-	if sub.Down == 0 {
-		err = pushsum.DelDiffList(account, sub.Board, "down")
-	}
-	if sub.Up == 0 && sub.Down == 0 {
-		err = pushsum.RemoveSubscriber(sub.Board, account)
-	} else {
-		err = pushsum.AddSubscriber(sub.Board, account)
-	}
-	return err
+	u.Subscribes.AddVerified(sub)
+	return nil
 }
 
-func addArticles(u *user.User, sub subscription.Subscription, inputs ...string) error {
+func removeArticles(_ context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
 	sub.Articles = inputs
-	a := models.Article()
-	a.Code = inputs[0]
-	a.AddSubscriber(u.Profile.Account)
-	return u.Subscribes.Add(sub)
-}
-
-func removeArticles(u *user.User, sub subscription.Subscription, inputs ...string) error {
-	sub.Articles = inputs
-	a := models.Article()
-	a.Code = inputs[0]
-	a.RemoveSubscriber(u.Profile.Account)
 	return u.Subscribes.Remove(sub)
 }

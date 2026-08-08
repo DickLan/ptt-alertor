@@ -6,7 +6,7 @@
     <title>Ptt Alertor - Ptt 即時文章通知，追蹤看板推文數、作者、關鍵字</title>
     <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
     <meta name="description" content="訂閱看板推文數作者關鍵字，即時通知 Ptt 最新文章">
-    <meta name="keywords" content="Ptt, Ptt Alarm, Ptt Alert, FB Bot, Messenger Bot, Ptt Notification, Ptt 通知器, Ptt 追蹤">
+    <meta name="keywords" content="Ptt, Ptt Alarm, Ptt Alert, Discord, Ptt Notification, Ptt 通知器, Ptt 追蹤">
     <meta name="author" content="Dino Lai, Liam Lai">
     <meta name="google-site-verification" content="oj4eRvcsK1aK3rqqBxn6piDte5-2sG9neQqcAnd8gTo" />
     <!-- Facebook Open Graph -->
