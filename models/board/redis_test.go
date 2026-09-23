@@ -50,3 +50,33 @@ func TestRedisGetArticlesEDistinguishesMissingEmptyAndCorrupt(t *testing.T) {
 		t.Fatalf("corrupt snapshot initialized=%t error=%v", initialized, err)
 	}
 }
+
+func TestRedisCreateDoesNotAddBoardOutsidePollingAllowlist(t *testing.T) {
+	t.Setenv(pollingAllowlistEnvironment, "HardwareSale,MacShop,PC_Shopping")
+	boardRedis.FlushAll()
+	store := Redis{}
+	if err := store.Create("Stock"); err != nil {
+		t.Fatalf("Create(disallowed): %v", err)
+	}
+	if store.Exist("Stock") {
+		t.Fatal("disallowed board entered the polling set")
+	}
+	if err := store.Create("HardwareSale"); err != nil {
+		t.Fatalf("Create(allowed): %v", err)
+	}
+	if !store.Exist("HardwareSale") {
+		t.Fatal("allowed board did not enter the polling set")
+	}
+}
+
+func TestRedisCreateRetainsHistoricalBehaviorWithEmptyAllowlist(t *testing.T) {
+	t.Setenv(pollingAllowlistEnvironment, "")
+	boardRedis.FlushAll()
+	store := Redis{}
+	if err := store.Create("Stock"); err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	if !store.Exist("Stock") {
+		t.Fatal("empty allowlist prevented the historical unrestricted create")
+	}
+}

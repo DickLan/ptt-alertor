@@ -156,6 +156,139 @@ func TestMultiBoardCommandCommitsOnceWithMatchingIndexes(t *testing.T) {
 	}
 }
 
+func TestEmptyBoardAllowlistPreservesUnrestrictedSubscriptionBehavior(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "")
+	commandRedis.FlushAll()
+	saveCommandUser(t, "discord-main")
+	originalVerify := verifyBoardExist
+	defer func() { verifyBoardExist = originalVerify }()
+	calls := 0
+	verifyBoardExist = func(context.Context, string) (bool, string, error) {
+		calls++
+		return true, "", nil
+	}
+
+	result := ExecuteCommandContext(context.Background(), "新增 Stock tsmc", "discord-main", true)
+	if result.Kind != ExecutionKindSuccess || calls != 1 {
+		t.Fatalf("result = %#v, verify calls = %d; want historical success", result, calls)
+	}
+	if stored := models.User().Find("discord-main"); len(stored.Subscribes) != 1 {
+		t.Fatalf("subscriptions = %#v, want one", stored.Subscribes)
+	}
+}
+
+func TestBoardAllowlistAcceptsConfiguredBoardsCaseInsensitively(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	commandRedis.FlushAll()
+	saveCommandUser(t, "discord-main")
+	originalVerify := verifyBoardExist
+	defer func() { verifyBoardExist = originalVerify }()
+	verifyBoardExist = func(context.Context, string) (bool, string, error) {
+		return true, "", nil
+	}
+
+	result := ExecuteCommandContext(
+		context.Background(),
+		"新增 hardwaresale,MACSHOP,Pc_Shopping tracked",
+		"discord-main",
+		true,
+	)
+	if result.Kind != ExecutionKindSuccess {
+		t.Fatalf("result = %#v, want success", result)
+	}
+	stored := models.User().Find("discord-main")
+	if len(stored.Subscribes) != 3 {
+		t.Fatalf("subscriptions = %#v, want three allowed boards", stored.Subscribes)
+	}
+	for _, name := range []string{"hardwaresale", "macshop", "pc_shopping"} {
+		member, err := commandRedis.IsMember("boards", name)
+		if err != nil || !member {
+			t.Fatalf("boards member %s = (%t, %v), want true", name, member, err)
+		}
+	}
+}
+
+func TestBoardAllowlistRejectsNewSubscriptionBeforePTTAccess(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	commandRedis.FlushAll()
+	saveCommandUser(t, "discord-main")
+	originalVerify := verifyBoardExist
+	defer func() { verifyBoardExist = originalVerify }()
+	verifyCalls := 0
+	verifyBoardExist = func(context.Context, string) (bool, string, error) {
+		verifyCalls++
+		return true, "", nil
+	}
+
+	result := ExecuteCommandContext(context.Background(), "新增 Stock tsmc", "discord-main", true)
+	if result.Kind != ExecutionKindInvalid || result.Message != "此看板目前不接受新增訂閱。" {
+		t.Fatalf("result = %#v, want generic allowlist rejection", result)
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("PTT board verification calls = %d, want 0", verifyCalls)
+	}
+	if strings.Contains(result.Message, "HardwareSale") || strings.Contains(result.Message, "BOARD_ALLOWLIST") {
+		t.Fatalf("allowlist configuration leaked in response: %q", result.Message)
+	}
+	if stored := models.User().Find("discord-main"); len(stored.Subscribes) != 0 {
+		t.Fatalf("rejected subscription was stored: %#v", stored.Subscribes)
+	}
+
+	originalFetch := fetchArticleFromPTT
+	defer func() { fetchArticleFromPTT = originalFetch }()
+	fetchCalls := 0
+	fetchArticleFromPTT = func(context.Context, string, string) (article.Article, error) {
+		fetchCalls++
+		return article.Article{}, nil
+	}
+	comment := ExecuteCommandContext(
+		context.Background(),
+		"新增推文 https://www.ptt.cc/bbs/Stock/M.1.A.001.html",
+		"discord-main",
+		true,
+	)
+	if comment.Kind != ExecutionKindInvalid || fetchCalls != 0 {
+		t.Fatalf("comment result = %#v, PTT fetch calls = %d", comment, fetchCalls)
+	}
+}
+
+func TestDeleteMigratedDisallowedSubscriptionPreservesCursor(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "")
+	commandRedis.FlushAll()
+	saveCommandUser(t, "discord-main")
+	originalVerify := verifyBoardExist
+	defer func() { verifyBoardExist = originalVerify }()
+	verifyBoardExist = func(context.Context, string) (bool, string, error) {
+		return true, "", nil
+	}
+	if result := ExecuteCommandContext(context.Background(), "新增 Stock legacy", "discord-main", true); result.Kind != ExecutionKindSuccess {
+		t.Fatalf("seed result = %#v", result)
+	}
+	cursorBefore, err := commandRedis.Get("board:stock")
+	if err != nil {
+		t.Fatalf("read migrated cursor: %v", err)
+	}
+
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	result := ExecuteCommandContext(context.Background(), "刪除 Stock legacy", "discord-main", true)
+	if result.Kind != ExecutionKindSuccess {
+		t.Fatalf("delete result = %#v", result)
+	}
+	if stored := models.User().Find("discord-main"); len(stored.Subscribes) != 0 {
+		t.Fatalf("disallowed subscription survived delete: %#v", stored.Subscribes)
+	}
+	cursorAfter, err := commandRedis.Get("board:stock")
+	if err != nil || cursorAfter != cursorBefore {
+		t.Fatalf("cursor after delete = (%q, %v), want %q", cursorAfter, err, cursorBefore)
+	}
+	if commandRedis.Exists("boards") {
+		member, err := commandRedis.IsMember("boards", "stock")
+		if err != nil || member {
+			t.Fatalf("boards membership after delete = (%t, %v), want false", member, err)
+		}
+	}
+}
+
 func TestAuthorCommandStoresSubstringRuleAndDocumentsItsMeaning(t *testing.T) {
 	commandRedis.FlushAll()
 	saveCommandUser(t, "discord-main")

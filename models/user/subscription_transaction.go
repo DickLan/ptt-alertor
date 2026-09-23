@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	boardmodel "github.com/Ptt-Alertor/ptt-alertor/models/board"
 	"github.com/garyburd/redigo/redis"
 )
 
@@ -121,7 +122,7 @@ func RebuildSubscriptionIndexes() error {
 			if state.authors {
 				addExpectedSetMember(expectedSets, authorIndexPrefix+board+":subs", account)
 			}
-			if state.keywords || state.authors {
+			if (state.keywords || state.authors) && boardmodel.PollingAllowed(board) {
 				boardNames[board] = struct{}{}
 			}
 			if state.hasPushSum() {
@@ -420,12 +421,20 @@ func buildSubscriptionIndexPlan(previous, next User, account string) subscriptio
 		authorKey := authorIndexPrefix + board + ":subs"
 		plan.reconcileSet(keywordKey, account, newState.keywords)
 		plan.reconcileSet(authorKey, account, newState.authors)
-		if newState.keywords || newState.authors {
+		pollingSubscription := newState.keywords || newState.authors
+		pollingAllowed := boardmodel.PollingAllowed(board)
+		if pollingSubscription && pollingAllowed {
 			plan.addSet("SADD", "boards", board)
 			plan.pollBoardsToAdd[board] = [2]string{keywordKey, authorKey}
-		} else {
+		} else if !pollingSubscription && pollingAllowed {
 			plan.pollBoardsToDrop[board] = [2]string{keywordKey, authorKey}
 			plan.setKeys["boards"] = struct{}{}
+		} else {
+			// Reconcile the user and subscriber indexes above, while ensuring this
+			// deployment cannot schedule the board. Preserve its cursor across both
+			// migration and deletion so enabling the board later cannot replay old
+			// articles.
+			plan.addSet("SREM", "boards", board)
 		}
 
 		pushSubscriberKey := pushSumIndexPrefix + board + ":subs"

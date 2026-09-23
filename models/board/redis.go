@@ -37,6 +37,9 @@ func (Redis) Exist(boardName string) bool {
 }
 
 func (Redis) Create(boardName string) error {
+	if !PollingAllowed(boardName) {
+		return nil
+	}
 	conn := connections.Redis()
 	defer conn.Close()
 	_, err := conn.Do("SADD", "boards", boardName)

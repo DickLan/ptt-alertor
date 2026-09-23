@@ -45,3 +45,24 @@ ptt-alertor
 # app
 .env*
 !.env.example
+.deploy/
+
+# Redis snapshots and local deployment artifacts
+*.rdb
+*.aof
+appendonlydir/
+redis-key-inventory*.txt
+*.tar
+*.tar.gz
+*.tgz
+
+# Common SSH private-key and host-key files
+.ssh/
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*_ssh_key
+*_ssh_key.*
+*.key
+*.pem
+known_hosts
