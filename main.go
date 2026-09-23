@@ -24,6 +24,7 @@ import (
 	"github.com/Ptt-Alertor/ptt-alertor/models/pttaccess"
 	modelUser "github.com/Ptt-Alertor/ptt-alertor/models/user"
 	pttHTTP "github.com/Ptt-Alertor/ptt-alertor/ptt/http"
+	"github.com/Ptt-Alertor/ptt-alertor/stockwatch"
 )
 
 var (
@@ -122,6 +123,9 @@ func run() error {
 		}
 	}
 
+	stockService := stockwatch.New(stockwatch.NewStore(), environmentExplicitlyEnabled("STOCK_QUANT_NOTIFY_ENABLE"), os.Getenv("STOCK_QUANT_DISCORD_WEBHOOK_URL"), os.Getenv("DISCORD_WEBHOOK_URL"), os.Getenv("STOCK_QUANT_API_TOKEN"))
+	stopStockWatch := jobs.StartStockWatch(stockService)
+	defer stopStockWatch()
 	webhookErr := discord.NewFromEnv().Validate()
 	// Polling PTT is opt-in. Empty, misspelled, and otherwise ambiguous values
 	// must remain safe instead of silently starting background traffic.
@@ -154,6 +158,11 @@ func run() error {
 	}
 
 	router := newRouter()
+	stockAPI := ctrlr.StockWatch{Service: stockService, Token: os.Getenv("STOCK_QUANT_API_TOKEN")}
+	router.GET("/integrations/stock-quant/authors", stockAPI.Handle)
+	router.POST("/integrations/stock-quant/authors", stockAPI.Handle)
+	router.PATCH("/integrations/stock-quant/authors/:author", stockAPI.Handle)
+	router.DELETE("/integrations/stock-quant/authors/:author", stockAPI.Handle)
 
 	router.GET("/", requireStorage(ctrlr.Index))
 	router.GET("/redirect/:checksum", requireStorage(ctrlr.Redirect))
@@ -283,6 +292,7 @@ func run() error {
 		cancelDrain()
 		delivery.Stop()
 	}
+	stopStockWatch()
 	if err := connections.Close(); err != nil {
 		log.WithError(err).Warn("Close Redis Pool Failed")
 	}

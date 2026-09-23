@@ -38,7 +38,7 @@ PTT 使用者條款未提供爬取頻率授權，也提醒非 PTT 或未授權�
 8. 使用誠實且可設定的 `PTT_USER_AGENT`，禁止偽裝 Googlebot、代理輪換、CAPTCHA bypass 等規避手段。
 9. 限制級頁面只有在操作者明確設定 `PTT_OVER18=true` 後才加入 cookie；否則 crawler 回傳明確的 consent error。
 10. Atom 小視窗內找不到已保存的文章邊界、且所有項目都比 cursor 新時，才依 `PTT_CATCHUP_MAX_PAGES` 從 HTML 新頁向舊頁有限回溯。完整 `M/G.<timestamp>.A.<hash>` identity 保留同秒多篇；抓取失敗或達上限時不更新 cursor。
-11. 看板從無有效訂閱轉為啟用時，訂閱 transaction 會原子寫入啟用時間 watermark；第一次 poll 只通知啟用時間之後的文章，不以靜默 baseline 吞掉等待 limiter 期間的新文。若這段期間超出 Atom 視窗，仍走相同的 bounded catch-up。
+11. 看板從無有效訂閱轉為啟用時，訂閱 transaction 會原子寫入啟用時間 watermark；第一次 poll 只通知啟用時間之後的文章，不以靜默 baseline 吞掉等待 limiter 期間的新文。若這段期間超出 Atom 視窗，仍走相同的 bounded catch-up。同一批補抓文章的發文時間跨度達 `PTT_DELAYED_ARTICLE_BATCH_SPAN`（預設 10 分鐘）時，該批命中的通知開頭會標示為延遲補發並附上原發文時間；判定只依文章資料，因此 outbox 重試時內容與 event ID 保持穩定。
 12. 推爆統計依 `PTT_PUSHSUM_MAX_PAGES` 限制每輪 HTML 頁數；只有完整到達 48 小時邊界或第 1 頁才提交通知狀態。中途錯誤、無法解析或達頁數上限都保留舊狀態重試。
 13. `BOARD_HIGH` 只是優先順序提示；每輪會與實際有訂閱者的看板取交集，不為未訂閱看板增加流量。
 14. 留言 cursor 保存完整 occurrence snapshot、隨機 tracking epoch 與 hash-chain revision，並在 enqueue 前先保存不可變 pending transition。Stage、無事件 advance 與 enqueue 後 commit 都以完整 Redis state JSON 做 CAS；只有 command 建立新訂閱可以無條件 reset lifecycle，因此並行 checker 不能覆寫新 epoch 或刪除別人的 pending。頁面結構不完整、推文欄位/時間無法解析，或已追蹤非空頁突然變空時都不推進 cursor；保守策略可能在極端刪留言情況少量重複，但不會靜默漏掉確定的新 suffix。

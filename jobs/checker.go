@@ -18,13 +18,17 @@ import (
 	"github.com/Ptt-Alertor/ptt-alertor/models/user"
 )
 
-const checkHighBoardDuration = 250 * time.Millisecond
+const (
+	checkHighBoardDuration         = 250 * time.Millisecond
+	defaultDelayedArticleBatchSpan = 10 * time.Minute
+)
 
 var boardCh = make(chan *board.Board, 700)
 var highBoards, highBoardSet = parseHighBoards(os.Getenv("BOARD_HIGH"))
 
 var keywordSubscribersForBoard = keyword.SubscribersE
 var authorSubscribersForBoard = author.SubscribersE
+var delayedArticleBatchSpan = jobDurationFromEnv("PTT_DELAYED_ARTICLE_BATCH_SPAN", defaultDelayedArticleBatchSpan)
 
 func parseHighBoards(value string) ([]*board.Board, map[string]struct{}) {
 	boards := make([]*board.Board, 0)
@@ -344,6 +348,7 @@ func enqueueBoardNotifications(ctx context.Context, bd *board.Board) error {
 	}
 
 	seen := make(map[string]struct{}, len(matched))
+	delayedBatch := isDelayedArticleBatch(bd.NewArticles, delayedArticleBatchSpan)
 	for _, candidate := range bd.NewArticles {
 		identity := candidate.Identity()
 		if _, ok := matched[identity]; !ok {
@@ -353,7 +358,8 @@ func enqueueBoardNotifications(ctx context.Context, bd *board.Board) error {
 			continue
 		}
 		seen[identity] = struct{}{}
-		content := fmt.Sprintf("新文章@%s\n\n%s", bd.Name, candidate.String())
+		content := delayedArticleNotice(candidate, delayedBatch) +
+			fmt.Sprintf("新文章@%s\n\n%s", bd.Name, candidate.String())
 		if err := enqueueStableNotification(
 			ctx,
 			"article",
@@ -365,6 +371,54 @@ func enqueueBoardNotifications(ctx context.Context, bd *board.Board) error {
 		}
 	}
 	return nil
+}
+
+func isDelayedArticleBatch(articles article.Articles, threshold time.Duration) bool {
+	if threshold <= 0 || len(articles) < 2 {
+		return false
+	}
+	var oldest, newest time.Time
+	for _, candidate := range articles {
+		publishedAt, ok := articlePublishedAt(candidate)
+		if !ok {
+			continue
+		}
+		if oldest.IsZero() || publishedAt.Before(oldest) {
+			oldest = publishedAt
+		}
+		if newest.IsZero() || publishedAt.After(newest) {
+			newest = publishedAt
+		}
+	}
+	return !oldest.IsZero() && newest.Sub(oldest) >= threshold
+}
+
+func delayedArticleNotice(candidate article.Article, delayed bool) string {
+	if !delayed {
+		return ""
+	}
+	publishedAt, ok := articlePublishedAt(candidate)
+	if !ok {
+		return "⚠️ 延遲補發｜PTT 恢復後取得累積文章\n可能原因：PTT 暫時無法存取或系統正在補抓。\n\n"
+	}
+	return fmt.Sprintf(
+		"⚠️ 延遲補發｜PTT 恢復後取得累積文章\n原發文：%s\n可能原因：PTT 暫時無法存取或系統正在補抓。\n\n",
+		publishedAt.Local().Format("2006-01-02 15:04"),
+	)
+}
+
+func articlePublishedAt(candidate article.Article) (time.Time, bool) {
+	articleID := candidate.ID
+	if articleID <= 0 {
+		articleID = candidate.ParseID(candidate.Link)
+	}
+	if articleID <= 0 {
+		articleID = candidate.ParseID(candidate.Identity())
+	}
+	if articleID <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(articleID), 0), true
 }
 
 func articleMatchesSubscription(candidate article.Article, keywords, authors []string) bool {

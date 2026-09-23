@@ -24,6 +24,44 @@ type recordedNotification struct {
 	content string
 }
 
+func TestDelayedArticleNotice(t *testing.T) {
+	publishedAt := time.Date(2026, time.September, 16, 23, 10, 15, 0, time.Local)
+	candidate := article.Article{
+		ID:    int(publishedAt.Unix()),
+		Code:  "M.1789571415.A.EAD",
+		Title: "[賣] 4070ti",
+	}
+
+	notice := delayedArticleNotice(candidate, true)
+	for _, expected := range []string{"⚠️ 延遲補發", "PTT 恢復後取得累積文章", "2026-09-16 23:10", "PTT 暫時無法存取"} {
+		if !strings.Contains(notice, expected) {
+			t.Errorf("notice = %q, want %q", notice, expected)
+		}
+	}
+	if got := delayedArticleNotice(candidate, false); got != "" {
+		t.Errorf("ordinary article notice = %q, want empty", got)
+	}
+	if got := delayedArticleNotice(article.Article{Title: "missing timestamp"}, true); !strings.Contains(got, "⚠️ 延遲補發") {
+		t.Errorf("timestamp-free delayed notice = %q, want warning", got)
+	}
+}
+
+func TestIsDelayedArticleBatch(t *testing.T) {
+	base := time.Date(2026, time.September, 16, 21, 59, 34, 0, time.Local)
+	articleAt := func(offset time.Duration) article.Article {
+		return article.Article{ID: int(base.Add(offset).Unix())}
+	}
+	if !isDelayedArticleBatch(article.Articles{articleAt(0), articleAt(71 * time.Minute)}, 10*time.Minute) {
+		t.Fatal("wide catch-up batch was not marked delayed")
+	}
+	if isDelayedArticleBatch(article.Articles{articleAt(0), articleAt(2 * time.Minute)}, 10*time.Minute) {
+		t.Fatal("ordinary polling batch was marked delayed")
+	}
+	if isDelayedArticleBatch(article.Articles{articleAt(0)}, 10*time.Minute) {
+		t.Fatal("single article was marked as a delayed batch")
+	}
+}
+
 func TestBoardProducerEnqueuesSameSecondArticlesBeforeCursorCanAdvance(t *testing.T) {
 	originalKeyword := keywordSubscribersForBoard
 	originalAuthor := authorSubscribersForBoard

@@ -118,6 +118,9 @@ func discordUTF16Length(value string) int {
 }
 
 type discordOutboxWorker struct {
+	eligible         func(context.Context, *outbox.ClaimedItem) (bool, error)
+	onDelivered      func(*outbox.ClaimedItem, string)
+	onFailure        func(string)
 	store            outbox.Store
 	client           discordChunkSender
 	leaseDuration    time.Duration
@@ -225,6 +228,28 @@ func (worker *discordOutboxWorker) deliverClaimed(ctx context.Context, claimed *
 			log.WithField("event_id", claimed.EventID).Warn("Discord outbox item has an invalid chunk cursor")
 			return
 		}
+		if worker.eligible != nil {
+			allowed, eligibilityErr := worker.eligible(ctx, claimed)
+			if eligibilityErr != nil {
+				if worker.onFailure != nil {
+					worker.onFailure("subscription_lookup_failed")
+				}
+				_, _ = worker.store.Retry(ctx, claimed.EventID, claimed.LeaseToken, 30*time.Second, "subscription_lookup_failed")
+				return
+			}
+			if !allowed {
+				if canceler, ok := worker.store.(interface {
+					Cancel(context.Context, string, string) error
+				}); ok {
+					if err := canceler.Cancel(ctx, claimed.EventID, claimed.LeaseToken); err != nil && worker.onFailure != nil {
+						worker.onFailure("subscription_cancel_failed")
+					}
+				} else {
+					_, _ = worker.store.Retry(ctx, claimed.EventID, claimed.LeaseToken, 30*time.Second, "subscription_cancel_unavailable")
+				}
+				return
+			}
+		}
 		messageID, sendErr := worker.client.SendChunk(ctx, content)
 		if sendErr == nil && strings.TrimSpace(messageID) == "" {
 			sendErr = discord.ErrDeliveryUnconfirmed
@@ -236,6 +261,9 @@ func (worker *discordOutboxWorker) deliverClaimed(ctx context.Context, claimed *
 				return
 			}
 			failureClass, permanent := classifyDiscordFailure(sendErr)
+			if worker.onFailure != nil {
+				worker.onFailure(failureClass)
+			}
 			delay := worker.retryDelay(claimed.Attempts, permanent)
 			var httpError *discord.HTTPError
 			if errors.As(sendErr, &httpError) && httpError.RetryAfter > delay {
@@ -273,6 +301,9 @@ func (worker *discordOutboxWorker) deliverClaimed(ctx context.Context, claimed *
 			return
 		}
 		if ack.Completed || ack.AlreadyDone {
+			if ack.Completed && !ack.AlreadyDone && worker.onDelivered != nil {
+				worker.onDelivered(claimed, messageID)
+			}
 			return
 		}
 		claimed.NextChunk = ack.NextChunk
