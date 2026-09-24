@@ -121,7 +121,7 @@ Compose 的 Webhook URL 與 `APP_HOST` 只從權限設為 `0600` 的 `.env` 讀�
 - Redis 共用總量預算預設每小時 900、每日 10,000 個 request；達上限就不連線，留待下一個 UTC window。
 - 429 優先遵守 `Retry-After`，否則從 30 秒開始全域指數退避與 jitter，最高 15 分鐘。
 - 403 視為可能封鎖/挑戰，預設全域冷卻 15 分鐘，不做代理輪換、UA 冒充或 CAPTCHA 繞過。
-- `PTT_CIRCUIT_BREAKER_ENABLED=true`（預設）時，精確滑動 24 小時視窗內累計 3 次 403/429/challenge/reset 後會開啟 24 小時 circuit breaker；事件記錄、計數與 cooldown 以一個 Redis 原子操作提交，重啟不會清除。診斷時可明確設為 `false` 停用這個重複訊號升級，但每次訊號的短 cooldown、全域 request interval、預算與 retry 規則仍然生效；只有下面獨立的 transport reset 開關可再停用 reset/EOF 的短 cooldown。若 Redis 寫入失敗則 fail-closed，不會冒險繼續連 PTT。
+- `PTT_CIRCUIT_BREAKER_ENABLED=true`（預設）時，精確滑動 24 小時視窗內累計 3 次 403/429/challenge/reset 後會開啟 circuit breaker；cooldown 預設 24 小時，可設定的安全下限為 1 小時。事件記錄、計數與 cooldown 以一個 Redis 原子操作提交，重啟不會清除。診斷時可明確設為 `false` 停用這個重複訊號升級，但每次訊號的短 cooldown、全域 request interval、預算與 retry 規則仍然生效；只有下面獨立的 transport reset 開關可再停用 reset/EOF 的短 cooldown。若 Redis 寫入失敗則 fail-closed，不會冒險繼續連 PTT。
 - 對端主動 reset、header 前 EOF 或 unexpected EOF 時不在同輪重試，預設按疑似封鎖冷卻 15 分鐘；已觀察到的 block signal 使用獨立 5 秒 bounded context 寫入 Redis，不會因原 request 同時取消而遺失。診斷時可明確設 `PTT_TRANSPORT_RESET_COOLDOWN_ENABLED=false`：reset/EOF 仍不重試，但不再記錄為 block 或套用 15 分鐘 cooldown，下一次只受全域 request interval、producer cycle 與 request budget 控制。這不會弱化明確 403、429 或 HTML challenge 的 cooldown。其他 500/502/503/504、timeout 與連線錯誤短暫退避，404 不重試。
 - Atom 遇到 403/429/5xx 時不立刻改抓 HTML，避免失敗時流量加倍。其他 Atom 錯誤才嘗試 HTML；結構完整的 HTML 成功時將該板快取為 HTML-only 6 小時，兩者都失敗時持久退避 15 分鐘，避免每輪雙重請求。並行成功請求不會清掉另一請求剛建立的 backoff。
 - 使用可辨識的誠實 User-Agent，不再假冒 Firefox。

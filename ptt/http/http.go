@@ -531,7 +531,7 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 		"PTT_RETRY_BASE_DELAY":         30 * time.Second,
 		"PTT_SERVER_RETRY_BASE_DELAY":  time.Second,
 		"PTT_FORBIDDEN_COOLDOWN":       15 * time.Minute,
-		"PTT_CIRCUIT_BREAKER_COOLDOWN": 24 * time.Hour,
+		"PTT_CIRCUIT_BREAKER_COOLDOWN": time.Hour,
 		"PTT_REQUEST_TIMEOUT":          5 * time.Second,
 	}
 	if minimum := minimums[key]; minimum > 0 && duration < minimum {

@@ -258,6 +258,8 @@ func TestDurationFromEnvEnforcesPTTSafetyMinimums(t *testing.T) {
 		{name: "request interval cannot be zero", key: "PTT_REQUEST_INTERVAL", value: "0s", fallback: time.Second, want: time.Second},
 		{name: "request interval cannot be shortened", key: "PTT_REQUEST_INTERVAL", value: "100ms", fallback: time.Second, want: time.Second},
 		{name: "cooldown cannot be disabled", key: "PTT_FORBIDDEN_COOLDOWN", value: "1s", fallback: 15 * time.Minute, want: 15 * time.Minute},
+		{name: "circuit breaker cannot be shorter than one hour", key: "PTT_CIRCUIT_BREAKER_COOLDOWN", value: "59m", fallback: 24 * time.Hour, want: 24 * time.Hour},
+		{name: "operator may use a one hour circuit breaker", key: "PTT_CIRCUIT_BREAKER_COOLDOWN", value: "1h", fallback: 24 * time.Hour, want: time.Hour},
 		{name: "operator may slow requests", key: "PTT_REQUEST_INTERVAL", value: "3s", fallback: time.Second, want: 3 * time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {
