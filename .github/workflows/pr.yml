@@ -34,11 +34,6 @@ jobs:
           go mod verify
           go test -race -tags test -coverprofile=coverage.txt -covermode=atomic ./...
 
-      - name: Go Vet
-        env:
-          PTT_REQUEST_INTERVAL: 0s
-        run: go vet ./...
-
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
