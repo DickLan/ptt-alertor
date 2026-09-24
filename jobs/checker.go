@@ -119,7 +119,8 @@ func (c Checker) RunContext(parent context.Context) {
 			started := time.Now()
 			// BOARD_HIGH is only a priority hint, never an instruction to poll an
 			// otherwise unsubscribed board forever.
-			checkBoards(ctx, intersectHighBoards(highBoards, models.Board().All()), checkHighBoardDuration)
+			activeBoards := filterPollingBoards(models.Board().All())
+			checkBoards(ctx, intersectHighBoards(highBoards, activeBoards), checkHighBoardDuration)
 			if !waitForNextCycle(ctx, started, c.highCycle) {
 				return
 			}
@@ -160,7 +161,7 @@ func (c Checker) RunContext(parent context.Context) {
 				}
 			default:
 				started := time.Now()
-				checkBoards(ctx, excludeHighBoards(models.Board().All()), duration)
+				checkBoards(ctx, excludeHighBoards(filterPollingBoards(models.Board().All())), duration)
 				if !waitForNextCycle(ctx, started, c.cycle) {
 					return
 				}
@@ -205,6 +206,15 @@ func excludeHighBoards(boards []*board.Board) (normalBoards []*board.Board) {
 		normalBoards = append(normalBoards, bd)
 	}
 	return normalBoards
+}
+
+func filterPollingBoards(boards []*board.Board) (allowed []*board.Board) {
+	for _, bd := range boards {
+		if bd != nil && board.PollingAllowed(bd.Name) {
+			allowed = append(allowed, bd)
+		}
+	}
+	return allowed
 }
 
 func intersectHighBoards(configured, subscribed []*board.Board) []*board.Board {
@@ -275,6 +285,9 @@ func checkBoards(ctx context.Context, bds []*board.Board, duration time.Duration
 }
 
 func checkNewArticle(ctx context.Context, bd *board.Board, _ chan *board.Board) {
+	if bd == nil || !board.PollingAllowed(bd.Name) {
+		return
+	}
 	if err := bd.WithNewArticlesContext(ctx); err != nil {
 		log.WithField("board", bd.Name).WithError(err).Warn("Skip Board Cursor After Fetch Or Storage Error")
 		return

@@ -498,6 +498,9 @@ func handleComment(ctx context.Context, command, userID, boardName, articleCode 
 		"words":   articleCode,
 	}).Info("Comment Command")
 	if strings.EqualFold(command, "新增推文") {
+		if !board.PollingAllowed(boardName) {
+			return invalidResult("此看板目前不接受新增訂閱。")
+		}
 		exists, err := checkArticleExist(ctx, boardName, articleCode)
 		if err != nil {
 			if errors.Is(err, errArticleStorage) {
@@ -598,6 +601,9 @@ func classifyExecutionError(err error) (ExecutionResult, bool) {
 	if errors.Is(err, errWildcardAdd) || errors.Is(err, errInvalidAuthorTitleKeyword) ||
 		errors.Is(err, errArticleSubscriptionLimit) {
 		return invalidResult(err.Error()), true
+	}
+	if errors.Is(err, board.ErrSubscriptionNotAllowed) {
+		return invalidResult("此看板目前不接受新增訂閱。"), true
 	}
 	if errors.Is(err, user.ErrConcurrentUpdate) || errors.Is(err, user.ErrUserNotExist) {
 		return conflictResult(), true

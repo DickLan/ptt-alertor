@@ -10,6 +10,7 @@ import (
 
 	"github.com/Ptt-Alertor/ptt-alertor/models"
 	"github.com/Ptt-Alertor/ptt-alertor/models/article"
+	"github.com/Ptt-Alertor/ptt-alertor/models/board"
 	"github.com/Ptt-Alertor/ptt-alertor/myutil"
 	"github.com/Ptt-Alertor/ptt-alertor/ptt/rss"
 	"github.com/julienschmidt/httprouter"
@@ -27,6 +28,10 @@ var findCachedArticle = func(code string) article.Article {
 
 func BoardArticleIndex(w http.ResponseWriter, r *http.Request, params httprouter.Params) {
 	boardName := strings.ToUpper(params.ByName("boardName"))
+	if !board.PollingAllowed(boardName) {
+		http.Error(w, "board is not available on this deployment", http.StatusBadRequest)
+		return
+	}
 	ctx, cancel := pttOperationContext(r.Context())
 	defer cancel()
 	articles, err := fetchBoardArticles(ctx, boardName)

@@ -137,6 +137,43 @@ func TestUpdateSubscriptionsCommitsUserAndEveryIndex(t *testing.T) {
 	}
 }
 
+func TestUpdateSubscriptionsDoesNotScheduleBoardOutsidePollingAllowlist(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	s.FlushAll()
+	before := saveAndReloadUser(t, "discord-main")
+	after := before.Clone()
+	after.Subscribes = subscription.Subscriptions{{Board: "Stock", Keywords: []string{"tsmc"}}}
+	if err := after.UpdateSubscriptions(before); err != nil {
+		t.Fatalf("UpdateSubscriptions(): %v", err)
+	}
+	requireSetMember(t, "keyword:stock:subs", "discord-main", true)
+	requireSetMember(t, "boards", "stock", false)
+	stored := NewUser(new(Redis)).Find("discord-main")
+	if len(stored.Subscribes) != 1 || stored.Subscribes[0].Board != "Stock" {
+		t.Fatalf("stored subscriptions = %#v", stored.Subscribes)
+	}
+}
+
+func TestUpdateSubscriptionsKeepsDisallowedPushSumInactive(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	s.FlushAll()
+	before := saveAndReloadUser(t, "discord-main")
+	after := before.Clone()
+	after.Subscribes = subscription.Subscriptions{{
+		Board:   "Stock",
+		PushSum: subscription.PushSum{Up: 50},
+	}}
+	if err := after.UpdateSubscriptions(before); err != nil {
+		t.Fatalf("UpdateSubscriptions(): %v", err)
+	}
+	requireSetMember(t, "pushsum:stock:subs", "discord-main", true)
+	requireSetMember(t, "pushsum:boards", "stock", false)
+	stored := NewUser(new(Redis)).Find("discord-main")
+	if len(stored.Subscribes) != 1 || stored.Subscribes[0].PushSum.Up != 50 {
+		t.Fatalf("stored subscriptions = %#v, want preserved inactive push-sum", stored.Subscribes)
+	}
+}
+
 func TestUpdateSubscriptionsRejectsStaleSnapshotWithoutIndexWrites(t *testing.T) {
 	s.FlushAll()
 	firstBefore := saveAndReloadUser(t, "discord-main")
@@ -433,6 +470,42 @@ func TestRebuildSubscriptionIndexesRemovesStaleAndPreservesDetails(t *testing.T)
 		}
 	}
 	requireSetMember(t, "boards", "stock", true)
+}
+
+func TestRebuildSubscriptionIndexesKeepsDisallowedSubscriptionsButPrunesPollingSet(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	s.FlushAll()
+	u := User{
+		Enable:  true,
+		Profile: Profile{Account: "discord-main", Discord: true},
+		Subscribes: subscription.Subscriptions{
+			{Board: "HardwareSale", Keywords: []string{"sale"}},
+			{Board: "Stock", Keywords: []string{"stock"}, PushSum: subscription.PushSum{Up: 50}},
+		},
+	}
+	data, err := json.Marshal(u)
+	if err != nil {
+		t.Fatalf("marshal user: %v", err)
+	}
+	s.Set("user:discord-main", string(data))
+	s.Set("board:stock", "migrated-cursor")
+	if err := RebuildSubscriptionIndexes(); err != nil {
+		t.Fatalf("RebuildSubscriptionIndexes(): %v", err)
+	}
+
+	requireSetMember(t, "keyword:hardwaresale:subs", "discord-main", true)
+	requireSetMember(t, "keyword:stock:subs", "discord-main", true)
+	requireSetMember(t, "boards", "hardwaresale", true)
+	requireSetMember(t, "boards", "stock", false)
+	requireSetMember(t, "pushsum:stock:subs", "discord-main", true)
+	requireSetMember(t, "pushsum:boards", "stock", false)
+	if cursor, err := s.Get("board:stock"); err != nil || cursor != "migrated-cursor" {
+		t.Fatalf("migrated cursor = (%q, %v), want preserved", cursor, err)
+	}
+	stored := NewUser(new(Redis)).Find("discord-main")
+	if len(stored.Subscribes) != 2 {
+		t.Fatalf("rebuild changed stored subscriptions: %#v", stored.Subscribes)
+	}
 }
 
 func TestRebuildSubscriptionIndexesIgnoresInactiveUsers(t *testing.T) {

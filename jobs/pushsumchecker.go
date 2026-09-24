@@ -13,6 +13,7 @@ import (
 	log "github.com/Ptt-Alertor/logrus"
 
 	"github.com/Ptt-Alertor/ptt-alertor/models/article"
+	boardmodel "github.com/Ptt-Alertor/ptt-alertor/models/board"
 	"github.com/Ptt-Alertor/ptt-alertor/models/pushsum"
 	"github.com/Ptt-Alertor/ptt-alertor/models/subscription"
 	"github.com/Ptt-Alertor/ptt-alertor/models/user"
@@ -109,6 +110,9 @@ func (psc pushSumChecker) RunContext(parent context.Context) {
 					continue
 				}
 				for _, board := range boards {
+					if !boardmodel.PollingAllowed(board) {
+						continue
+					}
 					ba := BoardArticles{board: board}
 					if !waitForContext(ctx, psc.duration) {
 						return
@@ -156,6 +160,9 @@ func (psc pushSumChecker) crawlArticles(ba BoardArticles, baCh chan BoardArticle
 }
 
 func (psc pushSumChecker) crawlArticlesContext(ctx context.Context, ba BoardArticles, baCh chan BoardArticles) {
+	if !boardmodel.PollingAllowed(ba.board) {
+		return
+	}
 	currentPage, err := currentBoardPage(ctx, ba.board)
 	if err != nil {
 		log.WithFields(log.Fields{

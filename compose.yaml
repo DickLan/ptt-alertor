@@ -14,6 +14,7 @@ services:
       retries: 10
 
   app:
+    image: ${APP_IMAGE:-ptt-alertor:local}
     build:
       context: .
     restart: unless-stopped
@@ -51,3 +52,6 @@ services:
 
 volumes:
   redis-data:
+    # A stable, operator-selectable name makes snapshot restores recoverable:
+    # import into a fresh volume, then switch REDIS_VOLUME_NAME in .env.
+    name: ${REDIS_VOLUME_NAME:-ptt-alertor_redis-data}

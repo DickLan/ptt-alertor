@@ -98,6 +98,31 @@ func TestBoardArticleIndexPropagatesRequestContext(t *testing.T) {
 	}
 }
 
+func TestBoardArticleIndexRejectsBoardOutsideAllowlistBeforeFetch(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	original := fetchBoardArticles
+	defer func() { fetchBoardArticles = original }()
+
+	called := false
+	fetchBoardArticles = func(context.Context, string) (article.Articles, error) {
+		called = true
+		return nil, nil
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/boards/Stock/articles", nil)
+	BoardArticleIndex(recorder, request, httprouter.Params{{Key: "boardName", Value: "Stock"}})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Fatal("out-of-scope board reached the PTT fetch function")
+	}
+	if strings.Contains(strings.ToLower(recorder.Body.String()), "hardwaresale") ||
+		strings.Contains(recorder.Body.String(), "BOARD_ALLOWLIST") {
+		t.Fatalf("response leaked allowlist configuration: %q", recorder.Body.String())
+	}
+}
+
 func TestBoardArticle(t *testing.T) {
 	original := findCachedArticle
 	defer func() { findCachedArticle = original }()

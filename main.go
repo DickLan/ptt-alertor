@@ -106,6 +106,10 @@ func main() {
 }
 
 func run() error {
+	if err := validateDeploymentRole(); err != nil {
+		return err
+	}
+
 	accessStore, err := pttaccess.NewRedis(pttaccess.RedisConfig{
 		HourlyLimit: boundedPositiveInt64FromEnvironment("PTT_MAX_REQUESTS_PER_HOUR", 900, 1800),
 		DailyLimit:  boundedPositiveInt64FromEnvironment("PTT_MAX_REQUESTS_PER_DAY", 10_000, 20_000),
@@ -297,6 +301,52 @@ func run() error {
 		log.WithError(err).Warn("Close Redis Pool Failed")
 	}
 	return runErr
+}
+
+func validateDeploymentRole() error {
+	role := strings.ToLower(strings.TrimSpace(os.Getenv("DEPLOYMENT_ROLE")))
+	if role == "" {
+		return nil
+	}
+	if role != "vps-b" {
+		return fmt.Errorf("unsupported DEPLOYMENT_ROLE")
+	}
+
+	requiredBoards := map[string]struct{}{
+		"hardwaresale": {},
+		"macshop":      {},
+		"pc_shopping":  {},
+	}
+	configuredBoards := make(map[string]struct{})
+	for _, value := range strings.Split(os.Getenv("BOARD_ALLOWLIST"), ",") {
+		name := strings.ToLower(strings.TrimSpace(value))
+		if name != "" {
+			configuredBoards[name] = struct{}{}
+		}
+	}
+	if len(configuredBoards) != len(requiredBoards) {
+		return fmt.Errorf("DEPLOYMENT_ROLE vps-b requires the exact board allowlist")
+	}
+	for name := range requiredBoards {
+		if _, ok := configuredBoards[name]; !ok {
+			return fmt.Errorf("DEPLOYMENT_ROLE vps-b requires the exact board allowlist")
+		}
+	}
+
+	for _, name := range []string{
+		"STOCK_QUANT_NOTIFY_ENABLE",
+		"PTT_COMMENT_JOBS_ENABLED",
+		"PTT_PUSHSUM_JOBS_ENABLED",
+	} {
+		if !strings.EqualFold(strings.TrimSpace(os.Getenv(name)), "false") {
+			return fmt.Errorf("DEPLOYMENT_ROLE vps-b requires %s=false", name)
+		}
+	}
+	jobsEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("JOBS_ENABLED")))
+	if jobsEnabled != "true" && jobsEnabled != "false" {
+		return fmt.Errorf("DEPLOYMENT_ROLE vps-b requires JOBS_ENABLED=true or false")
+	}
+	return nil
 }
 
 func durationFromEnvironment(name string, fallback time.Duration) time.Duration {

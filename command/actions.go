@@ -117,8 +117,10 @@ func updatePushUp(ctx context.Context, u *user.User, sub subscription.Subscripti
 		}
 	}
 	sub.PushSum.Up = up
-	if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
-		return err
+	if up > 0 {
+		if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
+			return err
+		}
 	}
 	u.Subscribes.UpdateVerified(sub)
 	return nil
@@ -135,14 +137,19 @@ func updatePushDown(ctx context.Context, u *user.User, sub subscription.Subscrip
 		}
 	}
 	sub.PushSum.Down = down
-	if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
-		return err
+	if down > 0 {
+		if err := verifyBoardForMutation(ctx, sub.Board); err != nil {
+			return err
+		}
 	}
 	u.Subscribes.UpdateVerified(sub)
 	return nil
 }
 
 func verifyBoardForMutation(ctx context.Context, boardName string) error {
+	if !board.PollingAllowed(boardName) {
+		return board.ErrSubscriptionNotAllowed
+	}
 	cache, _ := ctx.Value(boardValidationCacheContextKey{}).(boardValidationCache)
 	cacheKey := strings.ToLower(strings.TrimSpace(boardName))
 	if cached, ok := cache[cacheKey]; ok {
@@ -165,6 +172,9 @@ func verifyBoardForMutation(ctx context.Context, boardName string) error {
 }
 
 func addArticles(_ context.Context, u *user.User, sub subscription.Subscription, inputs ...string) error {
+	if !board.PollingAllowed(sub.Board) {
+		return board.ErrSubscriptionNotAllowed
+	}
 	sub.Articles = inputs
 	articleCode := inputs[0]
 	count := 0

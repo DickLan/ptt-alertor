@@ -47,6 +47,25 @@ func TestIntersectHighBoardsDoesNotPollUnsubscribedPriorityEntries(t *testing.T)
 	}
 }
 
+func TestFilterPollingBoardsHonorsDeploymentAllowlist(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	got := filterPollingBoards([]*board.Board{
+		{Name: "HardwareSale"},
+		{Name: "Stock"},
+		{Name: "pc_shopping"},
+	})
+	if len(got) != 2 || got[0].Name != "HardwareSale" || got[1].Name != "pc_shopping" {
+		t.Fatalf("filterPollingBoards() = %#v, want HardwareSale and pc_shopping", got)
+	}
+}
+
+func TestCheckNewArticleDoesNotFetchBoardOutsideDeploymentAllowlist(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	// A Board without drivers would panic if WithNewArticlesContext were called.
+	// Returning safely therefore proves the allowlist gate runs before fetch.
+	checkNewArticle(context.Background(), &board.Board{Name: "Stock"}, nil)
+}
+
 func TestArticleMatchesSubscriptionUsesTitleAndAuthorSubstrings(t *testing.T) {
 	candidate := article.Article{Title: "[情報] TSMC outlook", Author: "SomeAuthor"}
 
