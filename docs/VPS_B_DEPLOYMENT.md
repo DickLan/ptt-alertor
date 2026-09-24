@@ -41,8 +41,10 @@ snapshot is restored and checked.
 ## Redis key inventory
 
 The application uses these persisted key families. A full RDB snapshot is the
-safest migration unit because cursor, outbox, dedupe, subscription, cooldown,
-and rate-budget state must share one consistency point.
+safest migration unit because cursor, outbox, dedupe, and subscription state
+must share one consistency point. PTT access-policy keys are included in the
+backup for audit and rollback, but are node/IP-local and must be reset on a
+different egress IP before its first request.
 
 | Key or pattern | Redis type | Purpose |
 | --- | --- | --- |
@@ -64,13 +66,13 @@ and rate-budget state must share one consistency point.
 | `ptta:discord:outbox:done:<event-id>` | string | Delivered-event dedupe marker, normally 30-day TTL |
 | `ptta:discord:outbox:webhook-not-before` | string | Shared Discord backoff deadline |
 | `counter:alert` | string | Delivered alert counter |
-| `ptt:access:cooldown` | string | Global PTT cooldown; must not be cleared |
-| `ptt:access:blocks` | sorted set | Recent Cloudflare/block observations |
-| `ptt:access:block-sequence` | string | Monotonic member sequence for block observations |
-| `ptt:access:requests:hour:<bucket>` | string | Persistent hourly request counter |
-| `ptt:access:requests:day:<bucket>` | string | Persistent daily request counter |
-| `ptt:board-fetch:<board>:mode` | string | Temporary HTML-only fetch mode |
-| `ptt:board-fetch:<board>:backoff` | string | Per-board persistent fetch backoff |
+| `ptt:access:cooldown` | string | Node/IP-local PTT cooldown |
+| `ptt:access:blocks` | sorted set | Node/IP-local Cloudflare/block observations |
+| `ptt:access:block-sequence` | string | Monotonic member sequence for local block observations |
+| `ptt:access:requests:hour:<bucket>` | string | Node/IP-local hourly request counter |
+| `ptt:access:requests:day:<bucket>` | string | Node/IP-local daily request counter |
+| `ptt:board-fetch:<board>:mode` | string | Node-local temporary HTML-only fetch mode |
+| `ptt:board-fetch:<board>:backoff` | string | Node-local per-board fetch backoff |
 | `top:{keywords,authors,pushsum}` | sorted set | Generated popularity lists |
 | `ptta:stock-quant:{authors,state,cursor,lock,invalid,history,sent_count}` | mixed | Expert Stock watcher state owned by VPS-A after cutover |
 | `ptta:stock-quant:outbox:*` | mixed | Independent expert Stock Discord outbox |
@@ -118,24 +120,32 @@ if subscription/API requests can still change user records or enqueue events.
    the previous volume. Start Redis only and confirm its log reports a clean
    load. Confirm the app remains stopped while these checks run.
 10. With VPS-B polling still disabled, compare database size, user count,
-   selected cursor existence, outbox counts, cooldown/rate-state existence,
-   and `TYPE`/`PTTL` for the key families above.
-11. Start the VPS-B app with `JOBS_ENABLED=false`. Startup reconciliation will
+    selected cursor existence, outbox counts, and `TYPE`/`PTTL` for the key
+    families above. Inventory the imported PTT access-policy keys separately.
+11. While the VPS-B app is still stopped, remove the imported
+    `ptt:access:*` and `ptt:board-fetch:*` keys. They describe VPS-A's egress
+    IP, so carrying its block history can make VPS-B's first transient signal
+    incorrectly trip a 24-hour circuit breaker. This reset must happen before
+    VPS-B makes any PTT request.
+12. Start the VPS-B app with `JOBS_ENABLED=false`. Startup reconciliation will
     retain user documents but restrict the `boards` set to allowed active
     subscriptions. Confirm `SMEMBERS boards` contains no value outside
     `hardwaresale`, `macshop`, and `pc_shopping`. If one of the three is absent,
     verify whether it actually has an enabled Discord keyword/author
     subscription before adding or changing any state.
-12. Route general API writes to VPS-B, then set `JOBS_ENABLED=true` on VPS-B
+13. Route general API writes to VPS-B, then set `JOBS_ENABLED=true` on VPS-B
     and recreate only its app container. This is the first permitted general
     polling start.
-13. Restart/verify VPS-A in its Stock-only role and restore the Stock integration
+14. Restart/verify VPS-A in its Stock-only role and restore the Stock integration
     route to VPS-A. The copied `ptta:stock-quant:*` keys on VPS-B remain inert
     because its Stock watcher is disabled.
 
-Do not clear `ptt:access:*` or `ptt:board-fetch:*`, shorten their TTLs, or raise
-request limits during migration. Those keys carry the Cloudflare cooldown and
-rate safety state across the handoff.
+After VPS-B makes its first request, never delete its own block observations,
+shorten its cooldown, or raise request limits to work around a challenge. If a
+reset was missed and imported history has already mixed with VPS-B events,
+stop the app and preserve every event observed after the cutover timestamp;
+remove only the VPS-A events and recompute the cooldown from the newest retained
+VPS-B event using the configured minimum.
 
 ## Cutover checks
 
