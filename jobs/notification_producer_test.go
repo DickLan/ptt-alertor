@@ -360,6 +360,29 @@ type memoryCommentCursor struct {
 	pending *commentcursor.Pending
 }
 
+func TestCommentCheckerRejectsBoardOutsideAllowlistBeforeFetch(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	originalArticleFactory := models.Article
+	originalFetch := fetchCommentArticle
+	defer func() {
+		models.Article = originalArticleFactory
+		fetchCommentArticle = originalFetch
+	}()
+
+	driver := &memoryArticleDriver{stored: article.Article{Code: "M.1.A.AAA", Board: "Stock"}}
+	models.Article = func() *article.Article { return article.NewArticle(driver) }
+	fetchCalls := 0
+	fetchCommentArticle = func(context.Context, string, string) (article.Article, error) {
+		fetchCalls++
+		return article.Article{}, nil
+	}
+
+	commentChecker{}.checkCommentsContext(context.Background(), driver.stored.Code, nil)
+	if fetchCalls != 0 {
+		t.Fatalf("PTT comment fetch calls = %d, want 0", fetchCalls)
+	}
+}
+
 func (cursor *memoryCommentCursor) Load(string) (commentcursor.State, error) {
 	cursor.mu.Lock()
 	defer cursor.mu.Unlock()

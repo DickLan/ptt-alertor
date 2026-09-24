@@ -154,6 +154,26 @@ func TestUpdateSubscriptionsDoesNotScheduleBoardOutsidePollingAllowlist(t *testi
 	}
 }
 
+func TestUpdateSubscriptionsKeepsDisallowedPushSumInactive(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	s.FlushAll()
+	before := saveAndReloadUser(t, "discord-main")
+	after := before.Clone()
+	after.Subscribes = subscription.Subscriptions{{
+		Board:   "Stock",
+		PushSum: subscription.PushSum{Up: 50},
+	}}
+	if err := after.UpdateSubscriptions(before); err != nil {
+		t.Fatalf("UpdateSubscriptions(): %v", err)
+	}
+	requireSetMember(t, "pushsum:stock:subs", "discord-main", true)
+	requireSetMember(t, "pushsum:boards", "stock", false)
+	stored := NewUser(new(Redis)).Find("discord-main")
+	if len(stored.Subscribes) != 1 || stored.Subscribes[0].PushSum.Up != 50 {
+		t.Fatalf("stored subscriptions = %#v, want preserved inactive push-sum", stored.Subscribes)
+	}
+}
+
 func TestUpdateSubscriptionsRejectsStaleSnapshotWithoutIndexWrites(t *testing.T) {
 	s.FlushAll()
 	firstBefore := saveAndReloadUser(t, "discord-main")
@@ -460,7 +480,7 @@ func TestRebuildSubscriptionIndexesKeepsDisallowedSubscriptionsButPrunesPollingS
 		Profile: Profile{Account: "discord-main", Discord: true},
 		Subscribes: subscription.Subscriptions{
 			{Board: "HardwareSale", Keywords: []string{"sale"}},
-			{Board: "Stock", Keywords: []string{"stock"}},
+			{Board: "Stock", Keywords: []string{"stock"}, PushSum: subscription.PushSum{Up: 50}},
 		},
 	}
 	data, err := json.Marshal(u)
@@ -477,6 +497,8 @@ func TestRebuildSubscriptionIndexesKeepsDisallowedSubscriptionsButPrunesPollingS
 	requireSetMember(t, "keyword:stock:subs", "discord-main", true)
 	requireSetMember(t, "boards", "hardwaresale", true)
 	requireSetMember(t, "boards", "stock", false)
+	requireSetMember(t, "pushsum:stock:subs", "discord-main", true)
+	requireSetMember(t, "pushsum:boards", "stock", false)
 	if cursor, err := s.Get("board:stock"); err != nil || cursor != "migrated-cursor" {
 		t.Fatalf("migrated cursor = (%q, %v), want preserved", cursor, err)
 	}

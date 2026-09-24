@@ -9,6 +9,37 @@ import (
 	"github.com/Ptt-Alertor/ptt-alertor/models/article"
 )
 
+func TestPushSumCrawlRejectsBoardOutsideAllowlistBeforeFetch(t *testing.T) {
+	t.Setenv("BOARD_ALLOWLIST", "HardwareSale,MacShop,PC_Shopping")
+	originalCurrentPage := currentBoardPage
+	originalFetch := fetchPushSumArticles
+	defer func() {
+		currentBoardPage = originalCurrentPage
+		fetchPushSumArticles = originalFetch
+	}()
+
+	pageCalls := 0
+	fetchCalls := 0
+	currentBoardPage = func(context.Context, string) (int, error) {
+		pageCalls++
+		return 1, nil
+	}
+	fetchPushSumArticles = func(context.Context, string, int) (article.Articles, error) {
+		fetchCalls++
+		return nil, nil
+	}
+	results := make(chan BoardArticles, 1)
+	pushSumChecker{}.crawlArticles(BoardArticles{board: "Stock"}, results)
+	if pageCalls != 0 || fetchCalls != 0 {
+		t.Fatalf("PTT push-sum calls = (page %d, fetch %d), want 0", pageCalls, fetchCalls)
+	}
+	select {
+	case result := <-results:
+		t.Fatalf("out-of-scope crawl produced a result: %#v", result)
+	default:
+	}
+}
+
 func TestPushSumCrawlStopsAfterFirstPageError(t *testing.T) {
 	originalCurrentPage := currentBoardPage
 	originalFetch := fetchPushSumArticles

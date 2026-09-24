@@ -9,10 +9,16 @@ VPS-A service without an explicit cutover decision.
 VPS-B uses this polling boundary:
 
 ```dotenv
+DEPLOYMENT_ROLE=vps-b
 BOARD_ALLOWLIST=HardwareSale,MacShop,PC_Shopping
 BOARD_HIGH=HardwareSale
 STOCK_QUANT_NOTIFY_ENABLE=false
 ```
+
+The `vps-b` role is fail-closed. Startup and the deployment script reject a
+missing or non-canonical allowlist, an ambiguous `JOBS_ENABLED` value, an
+enabled Stock watcher, or enabled comment/push-sum pollers. Existing nodes that
+leave `DEPLOYMENT_ROLE` blank retain the historical behavior.
 
 `BOARD_ALLOWLIST` is enforced both when the `boards` subscription index is
 rebuilt and immediately before a board worker fetches. User documents and
@@ -104,23 +110,26 @@ if subscription/API requests can still change user records or enqueue events.
 6. Run `BGSAVE`, wait for `LASTSAVE` to advance, then copy `/data/dump.rdb`
    from the Redis container. Record the RDB digest and keep the prior backup.
 7. Copy the RDB to VPS-B over an authenticated channel and verify the digest.
-8. Import it into a newly created Docker volume. Set
+8. Stop the VPS-B app before changing `REDIS_VOLUME_NAME` or replacing Redis.
+   Confirm `docker compose ps --status running -q app` returns no container.
+   Keep GitHub Actions deployments disabled throughout the migration window.
+9. Import the RDB into a newly created Docker volume. Set
    `REDIS_VOLUME_NAME=<new-volume>` in VPS-B's local `.env`; do not overwrite
    the previous volume. Start Redis only and confirm its log reports a clean
-   load.
-9. With VPS-B polling still disabled, compare database size, user count,
+   load. Confirm the app remains stopped while these checks run.
+10. With VPS-B polling still disabled, compare database size, user count,
    selected cursor existence, outbox counts, cooldown/rate-state existence,
    and `TYPE`/`PTTL` for the key families above.
-10. Start the VPS-B app with `JOBS_ENABLED=false`. Startup reconciliation will
+11. Start the VPS-B app with `JOBS_ENABLED=false`. Startup reconciliation will
     retain user documents but restrict the `boards` set to allowed active
     subscriptions. Confirm `SMEMBERS boards` contains no value outside
     `hardwaresale`, `macshop`, and `pc_shopping`. If one of the three is absent,
     verify whether it actually has an enabled Discord keyword/author
     subscription before adding or changing any state.
-11. Route general API writes to VPS-B, then set `JOBS_ENABLED=true` on VPS-B
+12. Route general API writes to VPS-B, then set `JOBS_ENABLED=true` on VPS-B
     and recreate only its app container. This is the first permitted general
     polling start.
-12. Restart/verify VPS-A in its Stock-only role and restore the Stock integration
+13. Restart/verify VPS-A in its Stock-only role and restore the Stock integration
     route to VPS-A. The copied `ptta:stock-quant:*` keys on VPS-B remain inert
     because its Stock watcher is disabled.
 
@@ -184,12 +193,17 @@ Configure the `vps-b` GitHub environment with:
 - `VPS_B_SSH_PORT` when SSH does not use port 22
 - `VPS_B_KNOWN_HOSTS`, populated out of band from the verified VPS-B host key
 
+`VPS_B_SSH_KEY` authenticates GitHub Actions to VPS-B. It must be distinct from
+the VPS-B-to-GitHub repository deploy key; never copy that repository key into
+GitHub Actions.
+
 Enable required-reviewer approval on the GitHub `vps-b` environment before the
 workflow is used. The remote user needs Docker access and write access to
 `/opt/ptt-alertor`. Deployments share one concurrency group. SSH host-key
 verification is mandatory. The transferred image archive is checked against a
-SHA-256 digest before `docker load`, and temporary archives are removed after
-success or failure.
+SHA-256 digest before `docker load`. Each run uses a private random remote
+staging directory; artifacts must be regular files owned by the deployment
+user, and the directory is removed after success or failure.
 
 A release becomes current only after both loopback health endpoints pass;
 failure restores the previous image and compose file and checks both endpoints
@@ -198,7 +212,9 @@ as a bootstrap release before it is replaced, so it is also a rollback target.
 If no prior app exists, a failed first deployment stops the failed app. Cleanup
 is limited to the `ptt-alertor-vps-b:<commit>` repository and retains only the
 new and immediately previous deployment images. It never runs
-`docker system prune`.
+`docker system prune`. Redeploying the already-current commit is rejected before
+its release metadata or image tag can be replaced; deploy a new reviewed commit
+instead.
 
 ## SSH hardening after deployment validation
 

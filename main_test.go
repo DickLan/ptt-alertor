@@ -231,6 +231,60 @@ func TestEnvironmentExplicitlyEnabledIsSafeOptIn(t *testing.T) {
 	}
 }
 
+func TestValidateDeploymentRole(t *testing.T) {
+	valid := map[string]string{
+		"DEPLOYMENT_ROLE":           "vps-b",
+		"BOARD_ALLOWLIST":           "HardwareSale,MacShop,PC_Shopping",
+		"JOBS_ENABLED":              "false",
+		"STOCK_QUANT_NOTIFY_ENABLE": "false",
+		"PTT_COMMENT_JOBS_ENABLED":  "false",
+		"PTT_PUSHSUM_JOBS_ENABLED":  "false",
+	}
+	tests := []struct {
+		name      string
+		useValid  bool
+		overrides map[string]string
+		wantErr   bool
+	}{
+		{name: "unset role preserves existing deployments"},
+		{name: "valid staging role", useValid: true},
+		{name: "valid active role", useValid: true, overrides: map[string]string{"JOBS_ENABLED": "true"}},
+		{name: "allowlist order and case are canonical", useValid: true, overrides: map[string]string{"BOARD_ALLOWLIST": " pc_SHOPPING, hardwaresale, MACSHOP "}},
+		{name: "missing board fails closed", useValid: true, overrides: map[string]string{"BOARD_ALLOWLIST": "HardwareSale,MacShop"}, wantErr: true},
+		{name: "extra board fails closed", useValid: true, overrides: map[string]string{"BOARD_ALLOWLIST": "HardwareSale,MacShop,PC_Shopping,Stock"}, wantErr: true},
+		{name: "blank allowlist fails closed", useValid: true, overrides: map[string]string{"BOARD_ALLOWLIST": ""}, wantErr: true},
+		{name: "stock watcher must be explicitly false", useValid: true, overrides: map[string]string{"STOCK_QUANT_NOTIFY_ENABLE": ""}, wantErr: true},
+		{name: "comment checker cannot be enabled", useValid: true, overrides: map[string]string{"PTT_COMMENT_JOBS_ENABLED": "true"}, wantErr: true},
+		{name: "pushsum checker cannot be enabled", useValid: true, overrides: map[string]string{"PTT_PUSHSUM_JOBS_ENABLED": "true"}, wantErr: true},
+		{name: "jobs state must be explicit", useValid: true, overrides: map[string]string{"JOBS_ENABLED": "yes"}, wantErr: true},
+		{name: "unknown role is rejected", useValid: true, overrides: map[string]string{"DEPLOYMENT_ROLE": "other"}, wantErr: true},
+	}
+
+	keys := []string{
+		"DEPLOYMENT_ROLE", "BOARD_ALLOWLIST", "JOBS_ENABLED",
+		"STOCK_QUANT_NOTIFY_ENABLE", "PTT_COMMENT_JOBS_ENABLED", "PTT_PUSHSUM_JOBS_ENABLED",
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, key := range keys {
+				t.Setenv(key, "")
+			}
+			if test.useValid {
+				for key, value := range valid {
+					t.Setenv(key, value)
+				}
+			}
+			for key, value := range test.overrides {
+				t.Setenv(key, value)
+			}
+			err := validateDeploymentRole()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateDeploymentRole() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfiguredPTTPollersKeepBoardEnabledAndOptionalPollersOptIn(t *testing.T) {
 	for _, test := range []struct {
 		name           string

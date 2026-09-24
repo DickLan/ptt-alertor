@@ -37,13 +37,47 @@ if [[ ! -f $env_file ]]; then
 fi
 env_mode=$(stat -c '%a' "$env_file")
 if (( (8#$env_mode & 077) != 0 )); then
-  echo "$env_file must not be readable or writable by group/other" >&2
-  exit 1
+	echo "$env_file must not be readable or writable by group/other" >&2
+	exit 1
 fi
-if [[ ! -s $image_archive || ! -s $checksum_source || ! -s $compose_source ]]; then
-  echo "deployment artifact is missing" >&2
-  exit 1
+
+# Do not source the operator-controlled file. These exact, non-secret lines make
+# the VPS-B deployment fail closed even if the application being rolled back to
+# predates runtime role validation.
+require_exact_setting() {
+	local key=$1
+	local value=$2
+	local exact_count key_count
+	exact_count=$(grep -Fxc -- "$key=$value" "$env_file" || true)
+	key_count=$(grep -Ec -- "^${key}=" "$env_file" || true)
+	if [[ $exact_count != 1 || $key_count != 1 ]]; then
+		echo "VPS-B requires exactly one canonical $key setting" >&2
+		exit 1
+	fi
+}
+
+require_exact_setting DEPLOYMENT_ROLE vps-b
+require_exact_setting BOARD_ALLOWLIST HardwareSale,MacShop,PC_Shopping
+require_exact_setting STOCK_QUANT_NOTIFY_ENABLE false
+require_exact_setting PTT_COMMENT_JOBS_ENABLED false
+require_exact_setting PTT_PUSHSUM_JOBS_ENABLED false
+jobs_count=$(grep -Ec -- '^JOBS_ENABLED=(true|false)$' "$env_file" || true)
+jobs_key_count=$(grep -Ec -- '^JOBS_ENABLED=' "$env_file" || true)
+if [[ $jobs_count != 1 || $jobs_key_count != 1 ]]; then
+	echo "VPS-B requires exactly one canonical JOBS_ENABLED setting" >&2
+	exit 1
 fi
+
+for artifact in "$image_archive" "$checksum_source" "$compose_source"; do
+	if [[ ! -f $artifact || -L $artifact || ! -s $artifact ]]; then
+		echo "deployment artifact must be a non-empty regular file" >&2
+		exit 1
+	fi
+	if [[ $(stat -c '%u' "$artifact") != "$EUID" ]]; then
+		echo "deployment artifact owner does not match the deployment user" >&2
+		exit 1
+	fi
+done
 expected_checksum=$(tr -d '[:space:]' <"$checksum_source")
 if [[ ! $expected_checksum =~ ^[0-9a-f]{64}$ ]]; then
   echo "image checksum file is invalid" >&2
@@ -112,11 +146,6 @@ bootstrap_current_release() {
 
 bootstrap_current_release
 
-install -d -m 700 "$release_dir"
-install -m 644 "$compose_source" "$release_dir/compose.yaml"
-printf '%s\n' "$new_image" >"$release_dir/image"
-chmod 600 "$release_dir/image"
-
 previous_release=""
 previous_image=""
 if [[ -L $state_dir/current ]]; then
@@ -129,8 +158,18 @@ if [[ -L $state_dir/current ]]; then
   if [[ ! $previous_image =~ ^[a-z0-9][a-z0-9._/-]*:[0-9a-f]{40}$ || ${previous_image%:*} != "$image_repository" ]]; then
     echo "previous image marker is invalid" >&2
     exit 1
-  fi
+	fi
 fi
+
+if [[ -n $previous_release && $previous_release == "$release_dir" ]]; then
+	echo "commit $commit is already the current release; refusing to replace its rollback state" >&2
+	exit 1
+fi
+
+install -d -m 700 "$release_dir"
+install -m 644 "$compose_source" "$release_dir/compose.yaml"
+printf '%s\n' "$new_image" >"$release_dir/image"
+chmod 600 "$release_dir/image"
 
 gzip -dc "$image_archive" | docker load >/dev/null
 if ! docker image inspect "$new_image" >/dev/null 2>&1; then
@@ -150,8 +189,7 @@ compose_for() {
 }
 
 healthy() {
-  local attempt
-  for attempt in {1..24}; do
+	for _ in {1..24}; do
     if current_healthy; then
       return 0
     fi

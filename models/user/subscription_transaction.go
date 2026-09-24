@@ -126,7 +126,9 @@ func RebuildSubscriptionIndexes() error {
 				boardNames[board] = struct{}{}
 			}
 			if state.hasPushSum() {
-				addExpectedSetMember(expectedSets, pushSumIndexPrefix+"boards", board)
+				if boardmodel.PollingAllowed(board) {
+					addExpectedSetMember(expectedSets, pushSumIndexPrefix+"boards", board)
+				}
 				addExpectedSetMember(expectedSets, pushSumIndexPrefix+board+":subs", account)
 			}
 			for code := range state.articles {
@@ -439,7 +441,11 @@ func buildSubscriptionIndexPlan(previous, next User, account string) subscriptio
 
 		pushSubscriberKey := pushSumIndexPrefix + board + ":subs"
 		if newState.hasPushSum() {
-			plan.addSet("SADD", pushSumIndexPrefix+"boards", board)
+			if pollingAllowed {
+				plan.addSet("SADD", pushSumIndexPrefix+"boards", board)
+			} else {
+				plan.addSet("SREM", pushSumIndexPrefix+"boards", board)
+			}
 			plan.addSet("SADD", pushSubscriberKey, account)
 		} else {
 			plan.addSet("SREM", pushSubscriberKey, account)

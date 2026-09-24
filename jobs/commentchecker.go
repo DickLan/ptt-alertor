@@ -12,6 +12,7 @@ import (
 
 	"github.com/Ptt-Alertor/ptt-alertor/models"
 	"github.com/Ptt-Alertor/ptt-alertor/models/article"
+	"github.com/Ptt-Alertor/ptt-alertor/models/board"
 	"github.com/Ptt-Alertor/ptt-alertor/models/commentcursor"
 	"github.com/Ptt-Alertor/ptt-alertor/ptt/web"
 )
@@ -146,6 +147,10 @@ func (cc commentChecker) checkCommentsContext(ctx context.Context, code string, 
 		return
 	}
 	if a.Board == "" || a.Code == "" {
+		return
+	}
+	if !board.PollingAllowed(a.Board) {
+		log.WithField("board", a.Board).Info("Skip Comment Check Outside Deployment Board Boundary")
 		return
 	}
 
