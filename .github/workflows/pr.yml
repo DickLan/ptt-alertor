@@ -18,19 +18,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Setup Golang
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v6
         with:
-          go-version: ~1.15.0
+          go-version: "1.25.x"
+          cache-dependency-path: go.sum
 
       - name: Go Test
         env:
-          GO111MODULE: on
+          PTT_REQUEST_INTERVAL: 0s
         run: |
-          go get
+          go mod download
+          go mod verify
           go test -race -tags test -coverprofile=coverage.txt -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v1
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

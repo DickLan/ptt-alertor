@@ -1,0 +1,224 @@
+name: Deploy VPS-B
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full 40-character commit SHA to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ptt-alertor-vps-b-production
+  cancel-in-progress: false
+
+env:
+  DEPLOY_DIR: /opt/ptt-alertor
+  IMAGE_REPOSITORY: ptt-alertor-vps-b
+
+jobs:
+  test-build-deploy:
+    name: Test, build, and deploy fixed commit
+    runs-on: ubuntu-latest
+    environment: vps-b
+    timeout-minutes: 30
+    steps:
+      - name: Check out requested ref
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+
+      - name: Resolve immutable commit
+        id: source
+        env:
+          REQUESTED_COMMIT: ${{ inputs.commit }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ ! $REQUESTED_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
+            echo "workflow input must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          commit=$(git rev-parse HEAD)
+          if [[ $commit != "$REQUESTED_COMMIT" ]]; then
+            echo "checkout did not resolve to the requested commit" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor e05bff8 "$commit"
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Go 1.25
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: go.sum
+
+      - name: Run full test suite
+        env:
+          PTT_REQUEST_INTERVAL: 0s
+        run: go test ./...
+
+      - name: Build immutable deployment image
+        env:
+          COMMIT: ${{ steps.source.outputs.commit }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          image="$IMAGE_REPOSITORY:$COMMIT"
+          docker build --pull \
+            --label "org.opencontainers.image.revision=$COMMIT" \
+            --tag "$image" .
+          docker image inspect --format '{{.Id}}' "$image"
+          docker save "$image" | gzip -1 >ptt-alertor-vps-b-image.tar.gz
+          sha256sum ptt-alertor-vps-b-image.tar.gz | awk '{print $1}' >ptt-alertor-vps-b-image.sha256
+
+      - name: Configure verified SSH
+        env:
+          VPS_B_HOST: ${{ secrets.VPS_B_HOST }}
+          VPS_B_USER: ${{ secrets.VPS_B_USER }}
+          VPS_B_SSH_KEY: ${{ secrets.VPS_B_SSH_KEY }}
+          VPS_B_KNOWN_HOSTS: ${{ secrets.VPS_B_KNOWN_HOSTS }}
+          VPS_B_SSH_PORT: ${{ secrets.VPS_B_SSH_PORT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ $VPS_B_USER =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ $VPS_B_HOST =~ ^[A-Za-z0-9.:-]+$ ]]
+          port=${VPS_B_SSH_PORT:-22}
+          [[ $port =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          test -n "$VPS_B_SSH_KEY"
+          test -n "$VPS_B_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_B_SSH_KEY" >"$HOME/.ssh/vps_b"
+          printf '%s\n' "$VPS_B_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/vps_b" "$HOME/.ssh/known_hosts"
+          ssh -i "$HOME/.ssh/vps_b" -p "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$VPS_B_USER@$VPS_B_HOST" true
+
+      - name: Create private remote staging directory
+        id: remote
+        env:
+          VPS_B_HOST: ${{ secrets.VPS_B_HOST }}
+          VPS_B_USER: ${{ secrets.VPS_B_USER }}
+          VPS_B_SSH_PORT: ${{ secrets.VPS_B_SSH_PORT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          port=${VPS_B_SSH_PORT:-22}
+          remote_dir=$(ssh -i "$HOME/.ssh/vps_b" -p "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$VPS_B_USER@$VPS_B_HOST" \
+            'umask 077; mktemp -d /tmp/ptt-alertor-vps-b.XXXXXXXX')
+          remote_dir=${remote_dir//$'\r'/}
+          if [[ ! $remote_dir =~ ^/tmp/ptt-alertor-vps-b\.[A-Za-z0-9]{8}$ ]]; then
+            echo "remote staging directory has an unexpected path" >&2
+            exit 1
+          fi
+          echo "dir=$remote_dir" >>"$GITHUB_OUTPUT"
+
+      - name: Transfer fixed image and deployment files
+        env:
+          REMOTE_DIR: ${{ steps.remote.outputs.dir }}
+          VPS_B_HOST: ${{ secrets.VPS_B_HOST }}
+          VPS_B_USER: ${{ secrets.VPS_B_USER }}
+          VPS_B_SSH_PORT: ${{ secrets.VPS_B_SSH_PORT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          port=${VPS_B_SSH_PORT:-22}
+          [[ $REMOTE_DIR =~ ^/tmp/ptt-alertor-vps-b\.[A-Za-z0-9]{8}$ ]]
+          scp -i "$HOME/.ssh/vps_b" -P "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            ptt-alertor-vps-b-image.tar.gz \
+            "$VPS_B_USER@$VPS_B_HOST:$REMOTE_DIR/image.tar.gz"
+          scp -i "$HOME/.ssh/vps_b" -P "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            ptt-alertor-vps-b-image.sha256 \
+            "$VPS_B_USER@$VPS_B_HOST:$REMOTE_DIR/image.sha256"
+          scp -i "$HOME/.ssh/vps_b" -P "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            compose.yaml \
+            "$VPS_B_USER@$VPS_B_HOST:$REMOTE_DIR/compose.yaml"
+          scp -i "$HOME/.ssh/vps_b" -P "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            deploy/vps-b-deploy.sh \
+            "$VPS_B_USER@$VPS_B_HOST:$REMOTE_DIR/deploy.sh"
+
+      - name: Deploy and verify health
+        env:
+          COMMIT: ${{ steps.source.outputs.commit }}
+          REMOTE_DIR: ${{ steps.remote.outputs.dir }}
+          VPS_B_HOST: ${{ secrets.VPS_B_HOST }}
+          VPS_B_USER: ${{ secrets.VPS_B_USER }}
+          VPS_B_SSH_PORT: ${{ secrets.VPS_B_SSH_PORT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          port=${VPS_B_SSH_PORT:-22}
+          [[ $REMOTE_DIR =~ ^/tmp/ptt-alertor-vps-b\.[A-Za-z0-9]{8}$ ]]
+          ssh -i "$HOME/.ssh/vps_b" -p "$port" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$VPS_B_USER@$VPS_B_HOST" \
+            bash "$REMOTE_DIR/deploy.sh" \
+              "$DEPLOY_DIR" "$COMMIT" "$IMAGE_REPOSITORY" \
+              "$REMOTE_DIR/image.tar.gz" \
+              "$REMOTE_DIR/image.sha256" \
+              "$REMOTE_DIR/compose.yaml"
+
+      - name: Remove temporary deployment artifacts
+        if: always()
+        env:
+          REMOTE_DIR: ${{ steps.remote.outputs.dir }}
+          VPS_B_HOST: ${{ secrets.VPS_B_HOST }}
+          VPS_B_USER: ${{ secrets.VPS_B_USER }}
+          VPS_B_SSH_PORT: ${{ secrets.VPS_B_SSH_PORT }}
+        shell: bash
+        run: |
+          set +e
+          port=${VPS_B_SSH_PORT:-22}
+          if [[ ${REMOTE_DIR:-} =~ ^/tmp/ptt-alertor-vps-b\.[A-Za-z0-9]{8}$ && -f "$HOME/.ssh/vps_b" && -f "$HOME/.ssh/known_hosts" ]]; then
+            ssh -i "$HOME/.ssh/vps_b" -p "$port" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              "$VPS_B_USER@$VPS_B_HOST" \
+              bash -s -- "$REMOTE_DIR" <<'REMOTE_CLEANUP'
+          remote_dir=$1
+          [[ $remote_dir =~ ^/tmp/ptt-alertor-vps-b\.[A-Za-z0-9]{8}$ ]] || exit 2
+          rm -f -- \
+            "$remote_dir/image.tar.gz" \
+            "$remote_dir/image.sha256" \
+            "$remote_dir/compose.yaml" \
+            "$remote_dir/deploy.sh"
+          rmdir -- "$remote_dir"
+          REMOTE_CLEANUP
+          fi
+          rm -f -- ptt-alertor-vps-b-image.tar.gz ptt-alertor-vps-b-image.sha256
+          rm -f -- "$HOME/.ssh/vps_b" "$HOME/.ssh/known_hosts"
