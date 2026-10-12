@@ -324,7 +324,13 @@ func validateDeploymentRole() error {
 			configuredBoards[name] = struct{}{}
 		}
 	}
-	if len(configuredBoards) != len(requiredBoards) {
+	// Keep the existing three-board boundary compatible with staging and
+	// rollback, while allowing GameSale as an explicit additional board.
+	expectedBoardCount := len(requiredBoards)
+	if _, gamesaleEnabled := configuredBoards["gamesale"]; gamesaleEnabled {
+		expectedBoardCount++
+	}
+	if len(configuredBoards) != expectedBoardCount {
 		return fmt.Errorf("DEPLOYMENT_ROLE vps-b requires the exact board allowlist")
 	}
 	for name := range requiredBoards {

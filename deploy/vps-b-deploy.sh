@@ -57,7 +57,11 @@ require_exact_setting() {
 }
 
 require_exact_setting DEPLOYMENT_ROLE vps-b
-require_exact_setting BOARD_ALLOWLIST HardwareSale,MacShop,PC_Shopping
+if grep -Fqx -- 'BOARD_ALLOWLIST=HardwareSale,MacShop,PC_Shopping,GameSale' "$env_file"; then
+	require_exact_setting BOARD_ALLOWLIST HardwareSale,MacShop,PC_Shopping,GameSale
+else
+	require_exact_setting BOARD_ALLOWLIST HardwareSale,MacShop,PC_Shopping
+fi
 require_exact_setting STOCK_QUANT_NOTIFY_ENABLE false
 require_exact_setting PTT_COMMENT_JOBS_ENABLED false
 require_exact_setting PTT_PUSHSUM_JOBS_ENABLED false

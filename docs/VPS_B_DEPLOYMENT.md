@@ -15,6 +15,17 @@ BOARD_HIGH=HardwareSale
 STOCK_QUANT_NOTIFY_ENABLE=false
 ```
 
+GameSale can be enabled explicitly by using this extended canonical allowlist:
+
+```dotenv
+BOARD_ALLOWLIST=HardwareSale,MacShop,PC_Shopping,GameSale
+```
+
+The original three boards remain required, and other additional boards are
+rejected. Add a GameSale subscription separately; the allowlist alone does not
+activate polling for an unsubscribed board. Keep the original allowlist when
+rolling back to a release that predates GameSale support.
+
 The `vps-b` role is fail-closed. Startup and the deployment script reject a
 missing or non-canonical allowlist, an ambiguous `JOBS_ENABLED` value, an
 enabled Stock watcher, or enabled comment/push-sum pollers. Existing nodes that
